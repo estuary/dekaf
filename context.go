@@ -10,6 +10,7 @@ import (
 	"github.com/estuary/dekaf/protocol"
 )
 
+// Context holds a Kafka request/response pair for processing.
 type Context struct {
 	mu     sync.Mutex
 	conn   io.ReadWriter

@@ -1,42 +1,79 @@
 package dekaf
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"log"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/estuary/dekaf/protocol"
-	"github.com/hamba/avro"
+)
+
+const (
+	DefaultMaxMessagesPerTopic    = 5
+	DefaultMessageDeadlineSeconds = 5
 )
 
 // Config defines the handler config
 type Config struct {
-	// The Host we should tell kalka clients to connect to.
+	// The Host we should tell Kafka clients to connect to.
 	Host string
-	// The Port we should tell kafka clients to connect to.
+	// The Port we should tell Kafka clients to connect to.
 	Port int32
+	// The maximum number of messages we will provide per topic.
+	// Defaults to 5 if not set.
+	MaxMessagesPerTopic int
+	// Debug dumps message request/response.
+	Debug bool
 }
+
+// A MessageProvider function is used to provide messages for a topic. The handler will request
+// a message at startOffset. The MessageProvider should return a message offset, payload and error
+// to the request. If there are no more messages return io.EOF for the error. This function may block
+// up until the provided context.Context cancels in which case it should return io.EOF. If a
+type MessageProvider func(ctx context.Context, startOffset int64) (int64, []byte, error)
 
 // Handler config
 type Handler struct {
-	Config
-	topics map[string]*topic
+	config Config
+	topics map[string]MessageProvider
+	sync.RWMutex
 }
 
-type topic struct {
-	BufferStartOffset int64
-	BufferEndOffset   int64
-	Messages          [][]byte
-}
+func NewHandler(config Config) (*Handler, error) {
 
-func NewHandler(config Config) *Handler {
-	return &Handler{
-		Config: config,
-		topics: map[string]*topic{
-			"tester": &topic{},
-		},
+	if err := config.validate(); err != nil {
+		return nil, err
 	}
+
+	var h = &Handler{
+		config: config,
+		topics: make(map[string]MessageProvider),
+	}
+
+	if h.config.MaxMessagesPerTopic == 0 {
+		h.config.MaxMessagesPerTopic = DefaultMaxMessagesPerTopic
+	}
+
+	return h, nil
+}
+
+// Validates config
+func (c *Config) validate() error {
+	if c.Host == "" || c.Port == 0 {
+		return errors.New("invalid config")
+	}
+	return nil
+}
+
+func (h *Handler) AddTopic(name string, mp MessageProvider) {
+	h.Lock()
+	h.topics[name] = mp
+	h.Unlock()
 }
 
 // Run starts a loop to handle requests send back responses.
@@ -67,6 +104,12 @@ runLoop:
 				continue
 			}
 
+			if h.config.Debug {
+				log.Println("-----------------------------------------")
+				log.Printf("REQ: %#v", reqCtx.req)
+				log.Printf("RES: %#v", res)
+			}
+
 			responses <- &Context{
 				parent: reqCtx,
 				conn:   reqCtx.conn,
@@ -87,13 +130,16 @@ func (h *Handler) Shutdown() error {
 	return nil
 }
 
-// API Versions request
+// API Versions request sent by server to see what API's are available.
 func (h *Handler) handleAPIVersions(ctx *Context, req *protocol.APIVersionsRequest) *protocol.APIVersionsResponse {
 	return &protocol.APIVersionsResponse{APIVersions: protocol.APIVersions}
 }
 
-// Metadata request (info about topics)
+// Metadata request gets info about topics available and the brokers for the topics.
 func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *protocol.MetadataResponse {
+
+	h.RLock()
+	defer h.RUnlock()
 
 	var topicMetadata []*protocol.TopicMetadata
 	for name := range h.topics {
@@ -117,8 +163,8 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 		Brokers: []*protocol.Broker{
 			&protocol.Broker{
 				NodeID: 1,
-				Host:   h.Config.Host,
-				Port:   h.Config.Port,
+				Host:   h.config.Host,
+				Port:   h.config.Port,
 			},
 		},
 		ControllerID:  1,
@@ -126,8 +172,11 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 	}
 }
 
-// Offset request (info about topic available data)
+// Offset request gets info about topic available data.
 func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *protocol.OffsetsResponse {
+
+	h.RLock()
+	defer h.RUnlock()
 
 	var offsetRespones []*protocol.OffsetResponse
 	for _, reqTopic := range req.Topics {
@@ -135,7 +184,7 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 			var offset int64
 			var ts time.Time
 			if reqTopic.Partitions[0].Timestamp == -2 {
-				// Earliest = 0/Epoc
+				// Earliest = 0/Epoch
 				offset = 0
 				ts = time.Unix(0, 0)
 			} else if reqTopic.Partitions[0].Timestamp == -1 {
@@ -151,9 +200,8 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 						Partition: 0,
 						ErrorCode: 0,
 						Timestamp: ts,
-						// I HAVE AN UNLIMITED AMOUNT OF DATA CURRENT AS OF NOW!!!
-						Offset:  offset,
-						Offsets: []int64{offset},
+						Offset:    offset,
+						Offsets:   []int64{offset},
 					},
 				},
 			})
@@ -166,7 +214,7 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 	}
 }
 
-// FindCoordinator message
+// FindCoordinator message gets coordinator/host information.
 func (h *Handler) handleFindCoordinator(ctx *Context, req *protocol.FindCoordinatorRequest) *protocol.FindCoordinatorResponse {
 	return &protocol.FindCoordinatorResponse{
 		APIVersion:   req.APIVersion,
@@ -175,82 +223,79 @@ func (h *Handler) handleFindCoordinator(ctx *Context, req *protocol.FindCoordina
 		ErrorMessage: nil,
 		Coordinator: protocol.Coordinator{
 			NodeID: 1,
-			Host:   h.Config.Host,
-			Port:   h.Config.Port,
+			Host:   h.config.Host,
+			Port:   h.config.Port,
 		},
 	}
 }
 
-// Fetch data
+// Fetch data handles returning data for the requested topics.
 func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protocol.FetchResponse {
 
-	mustEncode := func(e protocol.Encoder) []byte {
-		var b []byte
-		var err error
-		if b, err = protocol.Encode(e); err != nil {
-			panic(err)
-		}
-		return b
+	h.RLock()
+	defer h.RUnlock()
+
+	// Setup the deadline to respond.
+	var deadline = req.MaxWaitTime
+	if deadline == 0 {
+		deadline = time.Second * DefaultMessageDeadlineSeconds
 	}
+	var deadlineCtx, deadlineCancel = context.WithDeadline(ctx.parent, time.Now().Add(deadline))
+	defer deadlineCancel()
 
-	time.Sleep(250 * time.Millisecond)
+	var responseChan = make(chan *protocol.FetchTopicResponse)
+	for _, fetchTopic := range req.Topics {
 
-	schema := avro.MustParse(`{
-        "type": "record",
-        "name": "envelope",
-        "fields": [
-            {
-            "name": "before",
-            "type": [
-                {
-                "name": "row",
-                "type": "record",
-                "fields": [
-                    {"name": "fielda", "type": "long"},
-                    {"name": "fieldb", "type": "string"},
-                    {"name": "ts", "type": "long", "logicalType": "timestamp-millis"}
-                ]
-                },
-                "null"
-            ]
-            },
-            { "name": "after", "type": ["row", "null"] }
-        ]
-    }`)
+		// Process all topics in parallel.
+		go func(fetchTopic *protocol.FetchTopic) {
 
-	type SimpleRecord struct {
-		A  int64  `avro:"fielda"`
-		B  string `avro:"fieldb"`
-		TS int64  `avro:"ts"`
-	}
+			// See if we have that topic message provider.
+			mp, ok := h.topics[fetchTopic.Topic]
+			if !ok {
+				responseChan <- nil // Not found, return nothing.
+				return
+			}
 
-	type Change struct {
-		Before *SimpleRecord `avro:"before"`
-		After  *SimpleRecord `avro:"after"`
-	}
+			// Make sure we're requesting the zero partition and get the fetchOffset.
+			if len(fetchTopic.Partitions) < 1 || fetchTopic.Partitions[0].Partition != 0 {
+				responseChan <- nil // Invalid request, return nothing.
+				log.Printf("invalid partition request: %d", fetchTopic.Partitions[0].Partition)
+				return
+			}
+			fetchOffset := fetchTopic.Partitions[0].FetchOffset
 
-	var record Change
+			// Build RecordSet to respond to this topic.
+			var buf bytes.Buffer
+			for x := 0; x < h.config.MaxMessagesPerTopic; x++ {
+				offset, data, err := mp(deadlineCtx, fetchOffset)
+				if err == io.EOF {
+					// No more available messages.
+					break
+				} else if err != nil {
+					log.Printf("topic %s message provider error: %v", fetchTopic.Topic, err)
+				}
 
-	record.After = &SimpleRecord{
-		A:  1,
-		B:  "B",
-		TS: time.Now().Unix() * 1000,
-	}
+				b, err := protocol.Encode(&protocol.MessageSet{
+					Offset: offset,
+					Message: &protocol.Message{
+						Value: data,
+					},
+				})
+				if err != nil {
+					panic(err)
+				}
+				if _, err = buf.Write(b); err != nil {
+					panic(err)
+				}
+			}
 
-	b, err := avro.Marshal(schema, record)
-	if err != nil {
-		panic(err)
-	}
+			// If no messages were fetched for this topic, return nothing.
+			if buf.Len() == 0 {
+				responseChan <- nil
+			}
 
-	offset := req.Topics[0].Partitions[0].FetchOffset
-	log.Printf("offset: %d", offset)
-
-	return &protocol.FetchResponse{
-		APIVersion:   req.APIVersion,
-		ThrottleTime: 0,
-		Responses: []*protocol.FetchTopicResponse{
-			&protocol.FetchTopicResponse{
-				Topic: "tester",
+			responseChan <- &protocol.FetchTopicResponse{
+				Topic: fetchTopic.Topic,
 				PartitionResponses: []*protocol.FetchPartitionResponse{
 					&protocol.FetchPartitionResponse{
 						Partition:           0,
@@ -258,11 +303,27 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 						HighWatermark:       math.MaxInt64,
 						LastStableOffset:    math.MaxInt64,
 						AbortedTransactions: nil,
-						RecordSet:           mustEncode(&protocol.MessageSet{Offset: offset, Size: int32(len(b)), Messages: []*protocol.Message{{Value: b}}}),
+						RecordSet:           buf.Bytes(),
 					},
 				},
-			},
-		},
+			}
+
+		}(fetchTopic)
+	}
+
+	var responses []*protocol.FetchTopicResponse
+	for x := 0; x < len(req.Topics); x++ {
+		response := <-responseChan
+		if response == nil {
+			continue
+		}
+		responses = append(responses, response)
+	}
+
+	return &protocol.FetchResponse{
+		APIVersion:   req.APIVersion,
+		ThrottleTime: 0,
+		Responses:    responses,
 	}
 
 }
