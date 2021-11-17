@@ -33,7 +33,6 @@ type MetadataResponse struct {
 }
 
 func (r *MetadataResponse) Encode(e PacketEncoder) (err error) {
-	e.PutInt32(r.ThrottleTime)
 	if err = e.PutArrayLength(len(r.Brokers)); err != nil {
 		return err
 	}
@@ -47,8 +46,10 @@ func (r *MetadataResponse) Encode(e PacketEncoder) (err error) {
 			return err
 		}
 	}
-	if err = e.PutNullableString(r.ClusterID); err != nil {
-		return err
+	if r.APIVersion >= 2 {
+		if err = e.PutNullableString(r.ClusterID); err != nil {
+			return err
+		}
 	}
 	if r.APIVersion >= 1 {
 		e.PutInt32(r.ControllerID)
@@ -61,7 +62,9 @@ func (r *MetadataResponse) Encode(e PacketEncoder) (err error) {
 		if err = e.PutString(t.Topic); err != nil {
 			return err
 		}
-		e.PutBool(t.IsInternal)
+		if r.APIVersion >= 1 {
+			e.PutBool(t.IsInternal)
+		}
 		if err = e.PutArrayLength(len(t.PartitionMetadata)); err != nil {
 			return err
 		}

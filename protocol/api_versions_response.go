@@ -20,14 +20,13 @@ type APIVersion struct {
 func (c *APIVersionsResponse) Encode(e PacketEncoder) error {
 	e.PutInt16(c.ErrorCode)
 
-	if err := e.PutArrayVarLength(len(c.APIVersions)); err != nil {
+	if err := e.PutArrayLength(len(c.APIVersions)); err != nil {
 		return err
 	}
 	for _, av := range c.APIVersions {
 		e.PutInt16(av.APIKey)
 		e.PutInt16(av.MinVersion)
 		e.PutInt16(av.MaxVersion)
-		e.PutInt8(0) // Tagged Fields?
 	}
 	if c.APIVersion >= 1 {
 		e.PutInt32(int32(c.ThrottleTime / time.Millisecond))

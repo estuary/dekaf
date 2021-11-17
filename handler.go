@@ -13,10 +13,15 @@ import (
 	"github.com/estuary/dekaf/protocol"
 )
 
+// Kafka Protocol Specification: https://kafka.apache.org/protocol
+
 const (
-	DefaultMaxMessagesPerTopic    = 5
-	DefaultMessageDeadlineSeconds = 5
+	DefaultMaxMessagesPerTopic = 10
+	DefaultMessageWaitDeadline = 5 * time.Second
+	MemberGroupIDSuffix        = "-00000000-0000-0000-0000-000000000000"
 )
+
+var ClusterID = "dekafclusterid"
 
 // Config defines the handler config
 type Config struct {
@@ -27,6 +32,8 @@ type Config struct {
 	// The maximum number of messages we will provide per topic.
 	// Defaults to 5 if not set.
 	MaxMessagesPerTopic int
+	// How long to wait for messages.
+	MessageWaitDeadline time.Duration
 	// Debug dumps message request/response.
 	Debug bool
 }
@@ -34,7 +41,7 @@ type Config struct {
 // A MessageProvider function is used to provide messages for a topic. The handler will request
 // a message at startOffset. The MessageProvider should return a message offset, payload and error
 // to the request. If there are no more messages return io.EOF for the error. This function may block
-// up until the provided context.Context cancels in which case it should return io.EOF. If a
+// up until the provided context.Context cancels in which case it should return io.EOF.
 type MessageProvider func(ctx context.Context, startOffset int64) (int64, []byte, error)
 
 // Handler config
@@ -57,6 +64,9 @@ func NewHandler(config Config) (*Handler, error) {
 
 	if h.config.MaxMessagesPerTopic == 0 {
 		h.config.MaxMessagesPerTopic = DefaultMaxMessagesPerTopic
+	}
+	if h.config.MessageWaitDeadline == 0 {
+		h.config.MessageWaitDeadline = DefaultMessageWaitDeadline
 	}
 
 	return h, nil
@@ -87,20 +97,33 @@ runLoop:
 			}
 
 			var res protocol.ResponseBody
-
 			switch req := reqCtx.req.(type) {
 			case *protocol.FetchRequest:
 				res = h.handleFetch(reqCtx, req)
 			case *protocol.OffsetsRequest:
 				res = h.handleOffsets(reqCtx, req)
-			case *protocol.FindCoordinatorRequest:
-				res = h.handleFindCoordinator(reqCtx, req)
 			case *protocol.MetadataRequest:
 				res = h.handleMetadata(reqCtx, req)
+			case *protocol.OffsetCommitRequest:
+				res = h.handleOffsetCommit(reqCtx, req)
+			case *protocol.OffsetFetchRequest:
+				res = h.handleOffsetFetch(reqCtx, req)
+			case *protocol.FindCoordinatorRequest:
+				res = h.handleFindCoordinator(reqCtx, req)
+			case *protocol.JoinGroupRequest:
+				res = h.handleJoinGroup(reqCtx, req)
+			case *protocol.HeartbeatRequest:
+				res = h.handleHeartbeat(reqCtx, req)
+			case *protocol.LeaveGroupRequest:
+				res = h.handleLeaveGroup(reqCtx, req)
+			case *protocol.SyncGroupRequest:
+				res = h.handleSyncGroup(reqCtx, req)
 			case *protocol.APIVersionsRequest:
 				res = h.handleAPIVersions(reqCtx, req)
 			default:
-				log.Printf("UNHANDLED KAFKA REQUEST: %#v", req)
+				log.Println("***********************************************************")
+				log.Printf("UNHANDLED REQUEST: %#v", req)
+				log.Println("***********************************************************")
 				continue
 			}
 
@@ -132,7 +155,21 @@ func (h *Handler) Shutdown() error {
 
 // API Versions request sent by server to see what API's are available.
 func (h *Handler) handleAPIVersions(ctx *Context, req *protocol.APIVersionsRequest) *protocol.APIVersionsResponse {
-	return &protocol.APIVersionsResponse{APIVersions: protocol.APIVersions}
+
+	// Get it to force version 0 for API requests
+	if req.APIVersion != 0 {
+		return &protocol.APIVersionsResponse{
+			APIVersion: req.APIVersion,
+			ErrorCode:  35,
+		}
+	}
+
+	return &protocol.APIVersionsResponse{
+		APIVersion:   req.APIVersion,
+		ErrorCode:    0,
+		APIVersions:  protocol.APIVersions,
+		ThrottleTime: 0,
+	}
 }
 
 // Metadata request gets info about topics available and the brokers for the topics.
@@ -142,9 +179,13 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 	defer h.RUnlock()
 
 	var topicMetadata []*protocol.TopicMetadata
-	for name := range h.topics {
+	for _, topicName := range req.Topics {
+		if _, ok := h.topics[topicName]; !ok {
+			continue
+		}
+
 		topicMetadata = append(topicMetadata, &protocol.TopicMetadata{
-			Topic:          name,
+			Topic:          topicName,
 			TopicErrorCode: 0,
 			PartitionMetadata: []*protocol.PartitionMetadata{
 				&protocol.PartitionMetadata{
@@ -168,6 +209,7 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 			},
 		},
 		ControllerID:  1,
+		ClusterID:     &ClusterID,
 		TopicMetadata: topicMetadata,
 	}
 }
@@ -180,38 +222,100 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 
 	var offsetRespones []*protocol.OffsetResponse
 	for _, reqTopic := range req.Topics {
-		if _, ok := h.topics[reqTopic.Topic]; ok {
-			var offset int64
-			var ts time.Time
-			if reqTopic.Partitions[0].Timestamp == -2 {
-				// Earliest = 0/Epoch
-				offset = 0
-				ts = time.Unix(0, 0)
-			} else if reqTopic.Partitions[0].Timestamp == -1 {
-				// Latest = all the data up until now
-				offset = math.MaxInt64 // Unlimited data
-				ts = time.Now()
-			}
-
-			offsetRespones = append(offsetRespones, &protocol.OffsetResponse{
-				Topic: reqTopic.Topic,
-				PartitionResponses: []*protocol.PartitionResponse{
-					&protocol.PartitionResponse{
-						Partition: 0,
-						ErrorCode: 0,
-						Timestamp: ts,
-						Offset:    offset,
-						Offsets:   []int64{offset},
-					},
-				},
-			})
+		if _, ok := h.topics[reqTopic.Topic]; !ok {
+			continue
 		}
+		var offset int64
+		var ts time.Time
+		if reqTopic.Partitions[0].Timestamp == -2 {
+			// Earliest = 0/Epoch
+			offset = 0
+			ts = time.Unix(0, 0)
+		} else if reqTopic.Partitions[0].Timestamp == -1 {
+			// Latest = all the data up until now
+			offset = math.MaxInt64 // Unlimited data
+			ts = time.Now()
+		}
+
+		offsetRespones = append(offsetRespones, &protocol.OffsetResponse{
+			Topic: reqTopic.Topic,
+			PartitionResponses: []*protocol.PartitionResponse{
+				&protocol.PartitionResponse{
+					Partition: 0,
+					ErrorCode: 0,
+					Timestamp: ts,
+					Offset:    offset,
+					Offsets:   []int64{offset},
+				},
+			},
+		})
 	}
 	return &protocol.OffsetsResponse{
 		APIVersion:   req.APIVersion,
 		ThrottleTime: 0,
 		Responses:    offsetRespones,
 	}
+}
+
+func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchRequest) *protocol.OffsetFetchResponse {
+
+	h.RLock()
+	defer h.RUnlock()
+	var emptyString string
+
+	var offsetFetchTopicResponse []protocol.OffsetFetchTopicResponse
+	for _, reqTopic := range req.Topics {
+		if _, ok := h.topics[reqTopic.Topic]; !ok {
+			continue
+		}
+
+		offsetFetchTopicResponse = append(offsetFetchTopicResponse, protocol.OffsetFetchTopicResponse{
+			Topic: reqTopic.Topic,
+			Partitions: []protocol.OffsetFetchPartition{
+				protocol.OffsetFetchPartition{
+					Partition: 0,
+					ErrorCode: 0,
+					Metadata:  &emptyString,
+					Offset:    -1, // None
+				},
+			},
+		})
+
+	}
+
+	return &protocol.OffsetFetchResponse{
+		APIVersion: req.APIVersion,
+		Responses:  offsetFetchTopicResponse,
+	}
+
+}
+
+// OffsetCommit confirms an offset is committed.
+func (h *Handler) handleOffsetCommit(ctx *Context, req *protocol.OffsetCommitRequest) *protocol.OffsetCommitResponse {
+
+	var offsetCommitTopicResponse []protocol.OffsetCommitTopicResponse
+	for _, reqTopic := range req.Topics {
+		if _, ok := h.topics[reqTopic.Topic]; !ok {
+			continue
+		}
+
+		offsetCommitTopicResponse = append(offsetCommitTopicResponse, protocol.OffsetCommitTopicResponse{
+			Topic: reqTopic.Topic,
+			PartitionResponses: []protocol.OffsetCommitPartitionResponse{
+				protocol.OffsetCommitPartitionResponse{
+					Partition: 0,
+					ErrorCode: 0,
+				},
+			},
+		})
+	}
+
+	return &protocol.OffsetCommitResponse{
+		APIVersion:   req.APIVersion,
+		ThrottleTime: 0,
+		Responses:    offsetCommitTopicResponse,
+	}
+
 }
 
 // FindCoordinator message gets coordinator/host information.
@@ -229,6 +333,66 @@ func (h *Handler) handleFindCoordinator(ctx *Context, req *protocol.FindCoordina
 	}
 }
 
+// Join Group asks to join a group.
+func (h *Handler) handleJoinGroup(ctx *Context, req *protocol.JoinGroupRequest) *protocol.JoinGroupResponse {
+
+	var protoMetadata []byte
+	if len(req.GroupProtocols) > 0 {
+		protoMetadata = req.GroupProtocols[0].ProtocolMetadata
+	}
+
+	return &protocol.JoinGroupResponse{
+		APIVersion:    req.APIVersion,
+		ThrottleTime:  0,
+		ErrorCode:     0,
+		GenerationID:  1,
+		GroupProtocol: "range",
+		LeaderID:      ctx.header.ClientID + MemberGroupIDSuffix,
+		MemberID:      ctx.header.ClientID + MemberGroupIDSuffix,
+		Members: []protocol.Member{
+			protocol.Member{
+				MemberID:       ctx.header.ClientID + MemberGroupIDSuffix,
+				MemberMetadata: protoMetadata,
+			},
+		},
+	}
+}
+
+// Sync Group asks to sync a group which basically asks to be the consumer for the group.
+func (h *Handler) handleSyncGroup(ctx *Context, req *protocol.SyncGroupRequest) *protocol.SyncGroupResponse {
+
+	var memberAssignment []byte
+	if len(req.GroupAssignments) > 0 {
+		memberAssignment = req.GroupAssignments[0].MemberAssignment
+	}
+
+	return &protocol.SyncGroupResponse{
+		APIVersion:       req.APIVersion,
+		ThrottleTime:     0,
+		ErrorCode:        0,
+		MemberAssignment: memberAssignment,
+	}
+}
+
+// Heartbeat asks to heartbeat a group.
+func (h *Handler) handleHeartbeat(ctx *Context, req *protocol.HeartbeatRequest) *protocol.HeartbeatResponse {
+
+	return &protocol.HeartbeatResponse{
+		APIVersion:   req.APIVersion,
+		ThrottleTime: 0,
+		ErrorCode:    0,
+	}
+}
+
+// Leave Group asks to leave a group.
+func (h *Handler) handleLeaveGroup(ctx *Context, req *protocol.LeaveGroupRequest) *protocol.LeaveGroupResponse {
+	return &protocol.LeaveGroupResponse{
+		APIVersion:   req.APIVersion,
+		ThrottleTime: 0,
+		ErrorCode:    0,
+	}
+}
+
 // Fetch data handles returning data for the requested topics.
 func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protocol.FetchResponse {
 
@@ -238,7 +402,7 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 	// Setup the deadline to respond.
 	var deadline = req.MaxWaitTime
 	if deadline == 0 {
-		deadline = time.Second * DefaultMessageDeadlineSeconds
+		deadline = h.config.MessageWaitDeadline
 	}
 	var deadlineCtx, deadlineCancel = context.WithDeadline(ctx.parent, time.Now().Add(deadline))
 	defer deadlineCancel()
@@ -311,6 +475,7 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 		}(fetchTopic)
 	}
 
+	// Get the topic responses and append them to the message.
 	var responses []*protocol.FetchTopicResponse
 	for x := 0; x < len(req.Topics); x++ {
 		response := <-responseChan

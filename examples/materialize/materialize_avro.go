@@ -71,8 +71,9 @@ func main() {
 
 	// Create our handler
 	handler, err := dekaf.NewHandler(dekaf.Config{
-		Host: "172.18.0.1",
-		Port: 9091,
+		Host:  "172.18.0.1",
+		Port:  9091,
+		Debug: false,
 	})
 	if err != nil {
 		panic(err)

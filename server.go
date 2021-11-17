@@ -140,50 +140,52 @@ func (s *Server) handleRequest(conn net.Conn) {
 		var req protocol.VersionedDecoder
 
 		switch header.APIKey {
-		// case protocol.ProduceKey:
-		// 	req = &protocol.ProduceRequest{}
+		case protocol.ProduceKey:
+			req = &protocol.ProduceRequest{}
 		case protocol.FetchKey:
 			req = &protocol.FetchRequest{}
 		case protocol.OffsetsKey:
 			req = &protocol.OffsetsRequest{}
 		case protocol.MetadataKey:
 			req = &protocol.MetadataRequest{}
-		// case protocol.LeaderAndISRKey:
-		// 	req = &protocol.LeaderAndISRRequest{}
-		// case protocol.StopReplicaKey:
-		// 	req = &protocol.StopReplicaRequest{}
-		// case protocol.UpdateMetadataKey:
-		// 	req = &protocol.UpdateMetadataRequest{}
-		// case protocol.ControlledShutdownKey:
-		// 	req = &protocol.ControlledShutdownRequest{}
-		// case protocol.OffsetCommitKey:
-		// 	req = &protocol.OffsetCommitRequest{}
-		// case protocol.OffsetFetchKey:
-		// 	req = &protocol.OffsetFetchRequest{}
+		case protocol.LeaderAndISRKey:
+			req = &protocol.LeaderAndISRRequest{}
+		case protocol.StopReplicaKey:
+			req = &protocol.StopReplicaRequest{}
+		case protocol.UpdateMetadataKey:
+			req = &protocol.UpdateMetadataRequest{}
+		case protocol.ControlledShutdownKey:
+			req = &protocol.ControlledShutdownRequest{}
+		case protocol.OffsetCommitKey:
+			req = &protocol.OffsetCommitRequest{}
+		case protocol.OffsetFetchKey:
+			req = &protocol.OffsetFetchRequest{}
 		case protocol.FindCoordinatorKey:
 			req = &protocol.FindCoordinatorRequest{}
 		case protocol.JoinGroupKey:
-		// 	req = &protocol.JoinGroupRequest{}
-		// case protocol.HeartbeatKey:
-		// 	req = &protocol.HeartbeatRequest{}
-		// case protocol.LeaveGroupKey:
-		// 	req = &protocol.LeaveGroupRequest{}
-		// case protocol.SyncGroupKey:
-		// 	req = &protocol.SyncGroupRequest{}
-		// case protocol.DescribeGroupsKey:
-		// 	req = &protocol.DescribeGroupsRequest{}
-		// case protocol.ListGroupsKey:
-		// 	req = &protocol.ListGroupsRequest{}
-		// case protocol.SaslHandshakeKey:
-		// 	req = &protocol.SaslHandshakeRequest{}
+			req = &protocol.JoinGroupRequest{}
+		case protocol.HeartbeatKey:
+			req = &protocol.HeartbeatRequest{}
+		case protocol.LeaveGroupKey:
+			req = &protocol.LeaveGroupRequest{}
+		case protocol.SyncGroupKey:
+			req = &protocol.SyncGroupRequest{}
+		case protocol.DescribeGroupsKey:
+			req = &protocol.DescribeGroupsRequest{}
+		case protocol.ListGroupsKey:
+			req = &protocol.ListGroupsRequest{}
 		case protocol.APIVersionsKey:
 			req = &protocol.APIVersionsRequest{}
-		// case protocol.CreateTopicsKey:
-		// 	req = &protocol.CreateTopicRequests{}
-		// case protocol.DeleteTopicsKey:
-		// 	req = &protocol.DeleteTopicsRequest{}
+		case protocol.SaslHandshakeKey:
+			req = &protocol.SaslHandshakeRequest{}
+		case protocol.CreateTopicsKey:
+			req = &protocol.CreateTopicRequests{}
+		case protocol.DeleteTopicsKey:
+			req = &protocol.DeleteTopicsRequest{}
 		default:
-			log.Printf("unhandled message: %#v", header)
+			log.Println("***********************************************************")
+			log.Printf("UNHANDLED MESSAGE: %#v", header)
+			log.Println("***********************************************************")
 			continue
 		}
 
