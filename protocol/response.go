@@ -25,7 +25,7 @@ func (r Response) Encode(pe PacketEncoder) (err error) {
 	return nil
 }
 
-func (r Response) Decode(pd PacketDecoder, version int16) (err error) {
+func (r *Response) Decode(pd PacketDecoder, version int16) (err error) {
 	r.Size, err = pd.Int32()
 	if err != nil {
 		return err

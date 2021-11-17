@@ -52,7 +52,6 @@ func Encode(e Encoder) ([]byte, error) {
 
 type LenEncoder struct {
 	Length int
-	stack  []int
 }
 
 func (e *LenEncoder) PutBool(in bool) {
@@ -294,7 +293,9 @@ func (e *ByteEncoder) Pop() {
 	// this is go's ugly pop pattern (the inverse of append)
 	pe := e.stack[len(e.stack)-1]
 	e.stack = e.stack[:len(e.stack)-1]
-	pe.Fill(e.off, e.b)
+	if err := pe.Fill(e.off, e.b); err != nil {
+		panic(err)
+	}
 }
 
 // SizeVarint returns the varint encoding size of an integer.

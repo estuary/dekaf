@@ -13,9 +13,13 @@ func (c *DeleteTopicsResponse) Encode(e PacketEncoder) error {
 	if c.APIVersion >= 1 {
 		e.PutInt32(int32(c.ThrottleTime / time.Millisecond))
 	}
-	e.PutArrayLength(len(c.TopicErrorCodes))
+	if err := e.PutArrayLength(len(c.TopicErrorCodes)); err != nil {
+		return err
+	}
 	for _, t := range c.TopicErrorCodes {
-		e.PutString(t.Topic)
+		if err := e.PutString(t.Topic); err != nil {
+			return err
+		}
 		e.PutInt16(t.ErrorCode)
 	}
 	return nil
