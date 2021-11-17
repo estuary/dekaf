@@ -14,13 +14,15 @@ import (
 )
 
 // Kafka Protocol Specification: https://kafka.apache.org/protocol
+// Kafka API Keys and Request/Response definitions: https://kafka.apache.org/protocol#protocol_api_keys
 
 const (
-	DefaultMaxMessagesPerTopic = 10
-	DefaultMessageWaitDeadline = 5 * time.Second
-	MemberGroupIDSuffix        = "-00000000-0000-0000-0000-000000000000"
+	defaultMaxMessagesPerTopic = 10
+	defaultMessageWaitDeadline = 5 * time.Second
+	memberGroupIDSuffix        = "-00000000-0000-0000-0000-000000000000"
 )
 
+// ClusterID we will use when talking to clients.
 var ClusterID = "dekafclusterid"
 
 // Config defines the handler config
@@ -30,9 +32,11 @@ type Config struct {
 	// The Port we should tell Kafka clients to connect to.
 	Port int32
 	// The maximum number of messages we will provide per topic.
-	// Defaults to 5 if not set.
+	// Defaults to 10 if not set.
 	MaxMessagesPerTopic int
-	// How long to wait for messages.
+	// How long to wait for messages from the provider.
+	// The config value will take precedence followed by the client request time
+	// and finally if neither are set, will default to 5 seconds.
 	MessageWaitDeadline time.Duration
 	// Debug dumps message request/response.
 	Debug bool
@@ -44,7 +48,7 @@ type Config struct {
 // up until the provided context.Context cancels in which case it should return io.EOF.
 type MessageProvider func(ctx context.Context, startOffset int64) (int64, []byte, error)
 
-// Handler config
+// Handler configuration.
 type Handler struct {
 	config Config
 	topics map[string]MessageProvider
@@ -62,17 +66,15 @@ func NewHandler(config Config) (*Handler, error) {
 		topics: make(map[string]MessageProvider),
 	}
 
-	if h.config.MaxMessagesPerTopic == 0 {
-		h.config.MaxMessagesPerTopic = DefaultMaxMessagesPerTopic
-	}
-	if h.config.MessageWaitDeadline == 0 {
-		h.config.MessageWaitDeadline = DefaultMessageWaitDeadline
+	// Handle defaults for unset values.
+	if h.config.MaxMessagesPerTopic <= 0 {
+		h.config.MaxMessagesPerTopic = defaultMaxMessagesPerTopic
 	}
 
 	return h, nil
 }
 
-// Validates config
+// Validates configuration.
 func (c *Config) validate() error {
 	if c.Host == "" || c.Port == 0 {
 		return errors.New("invalid config")
@@ -80,6 +82,7 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// AddTopic adds a new topic to the server and registers the MessageProvider with that topic.
 func (h *Handler) AddTopic(name string, mp MessageProvider) {
 	h.Lock()
 	h.topics[name] = mp
@@ -148,7 +151,7 @@ runLoop:
 	}
 }
 
-// Shutdown the handler
+// Shutdown the handler.
 func (h *Handler) Shutdown() error {
 	return nil
 }
@@ -188,7 +191,7 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 			Topic:          topicName,
 			TopicErrorCode: 0,
 			PartitionMetadata: []*protocol.PartitionMetadata{
-				&protocol.PartitionMetadata{
+				{
 					PartitionErrorCode: 0,
 					PartitionID:        0,
 					Leader:             1,
@@ -202,7 +205,7 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 	return &protocol.MetadataResponse{
 		APIVersion: req.APIVersion,
 		Brokers: []*protocol.Broker{
-			&protocol.Broker{
+			{
 				NodeID: 1,
 				Host:   h.config.Host,
 				Port:   h.config.Port,
@@ -214,7 +217,7 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 	}
 }
 
-// Offset request gets info about topic available data.
+// Offset request gets info about topic available messages and offsets.
 func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *protocol.OffsetsResponse {
 
 	h.RLock()
@@ -240,7 +243,7 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 		offsetRespones = append(offsetRespones, &protocol.OffsetResponse{
 			Topic: reqTopic.Topic,
 			PartitionResponses: []*protocol.PartitionResponse{
-				&protocol.PartitionResponse{
+				{
 					Partition: 0,
 					ErrorCode: 0,
 					Timestamp: ts,
@@ -257,6 +260,8 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 	}
 }
 
+// OffsetFetch returns the last committed offset value for the topic.
+// We may need to update this value in response to the OffsetCommit request.
 func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchRequest) *protocol.OffsetFetchResponse {
 
 	h.RLock()
@@ -272,7 +277,7 @@ func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchReque
 		offsetFetchTopicResponse = append(offsetFetchTopicResponse, protocol.OffsetFetchTopicResponse{
 			Topic: reqTopic.Topic,
 			Partitions: []protocol.OffsetFetchPartition{
-				protocol.OffsetFetchPartition{
+				{
 					Partition: 0,
 					ErrorCode: 0,
 					Metadata:  &emptyString,
@@ -290,7 +295,7 @@ func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchReque
 
 }
 
-// OffsetCommit confirms an offset is committed.
+// OffsetCommit sets the last committed offset value.
 func (h *Handler) handleOffsetCommit(ctx *Context, req *protocol.OffsetCommitRequest) *protocol.OffsetCommitResponse {
 
 	var offsetCommitTopicResponse []protocol.OffsetCommitTopicResponse
@@ -302,7 +307,7 @@ func (h *Handler) handleOffsetCommit(ctx *Context, req *protocol.OffsetCommitReq
 		offsetCommitTopicResponse = append(offsetCommitTopicResponse, protocol.OffsetCommitTopicResponse{
 			Topic: reqTopic.Topic,
 			PartitionResponses: []protocol.OffsetCommitPartitionResponse{
-				protocol.OffsetCommitPartitionResponse{
+				{
 					Partition: 0,
 					ErrorCode: 0,
 				},
@@ -347,18 +352,18 @@ func (h *Handler) handleJoinGroup(ctx *Context, req *protocol.JoinGroupRequest) 
 		ErrorCode:     0,
 		GenerationID:  1,
 		GroupProtocol: "range",
-		LeaderID:      ctx.header.ClientID + MemberGroupIDSuffix,
-		MemberID:      ctx.header.ClientID + MemberGroupIDSuffix,
+		LeaderID:      ctx.header.ClientID + memberGroupIDSuffix,
+		MemberID:      ctx.header.ClientID + memberGroupIDSuffix,
 		Members: []protocol.Member{
-			protocol.Member{
-				MemberID:       ctx.header.ClientID + MemberGroupIDSuffix,
+			{
+				MemberID:       ctx.header.ClientID + memberGroupIDSuffix,
 				MemberMetadata: protoMetadata,
 			},
 		},
 	}
 }
 
-// Sync Group asks to sync a group which basically asks to be the consumer for the group.
+// Sync Group asks to sync a group which basically will tell the client that it is the main consumer for the group.
 func (h *Handler) handleSyncGroup(ctx *Context, req *protocol.SyncGroupRequest) *protocol.SyncGroupResponse {
 
 	var memberAssignment []byte
@@ -400,10 +405,15 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 	defer h.RUnlock()
 
 	// Setup the deadline to respond.
-	var deadline = req.MaxWaitTime
+	var deadline = h.config.MessageWaitDeadline
 	if deadline == 0 {
-		deadline = h.config.MessageWaitDeadline
+		if req.MaxWaitTime != 0 {
+			deadline = req.MaxWaitTime
+		} else {
+			deadline = defaultMessageWaitDeadline
+		}
 	}
+
 	var deadlineCtx, deadlineCancel = context.WithDeadline(ctx.parent, time.Now().Add(deadline))
 	defer deadlineCancel()
 
@@ -461,7 +471,7 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 			responseChan <- &protocol.FetchTopicResponse{
 				Topic: fetchTopic.Topic,
 				PartitionResponses: []*protocol.FetchPartitionResponse{
-					&protocol.FetchPartitionResponse{
+					{
 						Partition:           0,
 						ErrorCode:           0,
 						HighWatermark:       math.MaxInt64,

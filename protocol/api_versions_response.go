@@ -16,7 +16,6 @@ type APIVersion struct {
 	MaxVersion int16
 }
 
-// Version 4 format
 func (c *APIVersionsResponse) Encode(e PacketEncoder) error {
 	e.PutInt16(c.ErrorCode)
 

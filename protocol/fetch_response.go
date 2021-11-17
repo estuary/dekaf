@@ -82,7 +82,9 @@ func (r *FetchPartitionResponse) Encode(e PacketEncoder, version int16) (err err
 			return err
 		}
 		for _, t := range r.AbortedTransactions {
-			t.Encode(e)
+			if err := t.Encode(e); err != nil {
+				return err
+			}
 		}
 	}
 

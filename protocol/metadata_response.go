@@ -155,6 +155,9 @@ func (r *MetadataResponse) Decode(d PacketDecoder, version int16) (err error) {
 				return err
 			}
 			p.ISR, err = d.Int32Array()
+			if err != nil {
+				return err
+			}
 			partitions[i] = p
 		}
 		m.PartitionMetadata = partitions

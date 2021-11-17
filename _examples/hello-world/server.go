@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -17,7 +18,7 @@ func main() {
 	// Create our handler
 	handler, err := dekaf.NewHandler(dekaf.Config{
 		Host:  "127.0.0.1", // This is the address the client should connect to.
-		Port:  9092,        // This is the port the client should connect to.
+		Port:  9091,        // This is the port the client should connect to.
 		Debug: false,       // Will log all messages.
 	})
 	if err != nil {
@@ -25,10 +26,10 @@ func main() {
 	}
 
 	// Create a topic and pass a handler
-	handler.AddTopic("topic_name", sampleHandler)
+	handler.AddTopic("hello_world", sampleHandler)
 
-	// Create the server and listen on port 9092 and pass it the handler.
-	server, err := dekaf.NewServer(ctx, ":9092", handler)
+	// Create the server and listen on port 9091 and pass it the handler.
+	server, err := dekaf.NewServer(ctx, ":9091", handler)
 	if err != nil {
 		panic(err)
 	}
@@ -50,7 +51,7 @@ func sampleHandler(ctx context.Context, offset int64) (int64, []byte, error) {
 
 	record := SampleRecord{
 		Offset: offset,
-		Sample: "Hello World!",
+		Sample: fmt.Sprintf("Hello World! Offset: %d", offset),
 	}
 
 	b, err := json.Marshal(record)
