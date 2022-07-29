@@ -449,12 +449,28 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 					log.Printf("topic %s message provider error: %v", fetchTopic.Topic, err)
 				}
 
-				b, err := protocol.Encode(&protocol.MessageSet{
+				ms := protocol.MessageSet{
 					Offset: offset,
 					Message: &protocol.Message{
 						Value: data,
 					},
-				})
+				}
+
+				// Use the v1 message format for Fetch v2 or later. Fetch v2 supports either the v0
+				// or v1 message format, but for simplicitly we will always simulate a v1 message on
+				// v2+ protocols. See
+				// https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-Messagesets.
+				if req.APIVersion >= 2 {
+					ms.Message.MagicByte = 1
+					// Placeholder timestamp: This may be replaced with something more interesting
+					// in the future for emulation purposes.
+					ms.Message.Timestamp = time.Now()
+					// Set log.message.timestamp.type = LogAppendTime, see
+					// https://kafka.apache.org/documentation/#messageset
+					ms.Message.Attributes = 0b1000
+				}
+
+				b, err := protocol.Encode(&ms)
 				if err != nil {
 					panic(err)
 				}
