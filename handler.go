@@ -461,9 +461,8 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 				// v2+ protocols. See
 				// https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-Messagesets.
 				if req.APIVersion >= 2 {
+					// 0 is for v0 message format; 1 is for v1 message format.
 					ms.Message.MagicByte = 1
-					// Placeholder timestamp: This may be replaced with something more interesting
-					// in the future for emulation purposes.
 					ms.Message.Timestamp = time.Now()
 					// Set log.message.timestamp.type = LogAppendTime, see
 					// https://kafka.apache.org/documentation/#messageset
