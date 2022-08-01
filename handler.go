@@ -25,6 +25,8 @@ const (
 // ClusterID we will use when talking to clients.
 var ClusterID = "dekafclusterid"
 
+type MaxOffsetFn func(time.Time) int64
+
 // Config defines the handler config
 type Config struct {
 	// The Host we should tell Kafka clients to connect to.
@@ -40,6 +42,8 @@ type Config struct {
 	MessageWaitDeadline time.Duration
 	// Debug dumps message request/response.
 	Debug bool
+	// MaxOffset returns the maximum available offset that the server should simulate as available.
+	MaxOffset MaxOffsetFn
 }
 
 // A MessageProvider function is used to provide messages for a topic. The handler will request
@@ -236,8 +240,12 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 			ts = time.Unix(0, 0)
 		} else if reqTopic.Partitions[0].Timestamp == -1 {
 			// Latest = all the data up until now
-			offset = math.MaxInt64 // Unlimited data
 			ts = time.Now()
+			if h.config.MaxOffset != nil {
+				offset = h.config.MaxOffset(ts)
+			} else {
+				offset = math.MaxInt64 // Unlimited data
+			}
 		}
 
 		offsetRespones = append(offsetRespones, &protocol.OffsetResponse{
@@ -417,6 +425,13 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 	var deadlineCtx, deadlineCancel = context.WithDeadline(ctx.parent, time.Now().Add(deadline))
 	defer deadlineCancel()
 
+	// Capture the time of this request so that we can calculate the max offset that should be
+	// available to any consumer.
+	maxOffsetAvailable := int64(math.MaxInt64)
+	if h.config.MaxOffset != nil {
+		maxOffsetAvailable = h.config.MaxOffset(time.Now())
+	}
+
 	var responseChan = make(chan *protocol.FetchTopicResponse)
 	for _, fetchTopic := range req.Topics {
 
@@ -436,12 +451,41 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 				log.Printf("invalid partition request: %d", fetchTopic.Partitions[0].Partition)
 				return
 			}
-			fetchOffset := fetchTopic.Partitions[0].FetchOffset
+
+			// If an offset is being request that we don't yet have available, a partition response
+			// with no records should be returned.
+			startingOffset := fetchTopic.Partitions[0].FetchOffset
+			if startingOffset > maxOffsetAvailable {
+				responseChan <- &protocol.FetchTopicResponse{
+					Topic: fetchTopic.Topic,
+					PartitionResponses: []*protocol.FetchPartitionResponse{
+						{
+							Partition:           0,
+							ErrorCode:           0,
+							HighWatermark:       math.MaxInt64,
+							LastStableOffset:    math.MaxInt64,
+							AbortedTransactions: nil,
+							RecordSet:           nil,
+						},
+					},
+				}
+				return
+			}
 
 			// Build RecordSet to respond to this topic.
 			var buf bytes.Buffer
 			for x := 0; x < h.config.MaxMessagesPerTopic; x++ {
-				offset, data, err := mp(deadlineCtx, fetchOffset)
+				// Each message in the RecordSet batch is from the "next" offset as we build the
+				// batch.
+				thisOffset := startingOffset + int64(x)
+
+				// If we've exceeded the offsets for which there are messages available, there are
+				// no more available messages.
+				if thisOffset > maxOffsetAvailable {
+					break
+				}
+
+				offset, data, err := mp(deadlineCtx, thisOffset)
 				if err == io.EOF {
 					// No more available messages.
 					break
