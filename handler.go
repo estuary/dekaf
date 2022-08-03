@@ -452,8 +452,8 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 				return
 			}
 
-			// If an offset is being request that we don't yet have available, a partition response
-			// with no records should be returned.
+			// If an offset is being requested that we don't yet have available, a partition
+			// response with no records should be returned.
 			startingOffset := fetchTopic.Partitions[0].FetchOffset
 			if startingOffset > maxOffsetAvailable {
 				responseChan <- &protocol.FetchTopicResponse{
