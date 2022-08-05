@@ -25,10 +25,9 @@ const (
 // ClusterID we will use when talking to clients.
 var ClusterID = "dekafclusterid"
 
-// RecordsAvailableFn allows behavior controlling the number of available records the server should
-// emulate be provided as configuration when initializing the server. In a typical case, the
-// function could return a larger and larger value based on the passage of time since
-// initialization.
+// RecordsAvailableFn allows for controlling the number of available records the server should
+// emulate. In a typical case, the function could return a larger and larger value based on the
+// passage of time since initialization.
 type RecordsAvailableFn func() int64
 
 // Config defines the handler config
