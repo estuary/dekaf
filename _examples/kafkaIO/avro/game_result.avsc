@@ -1,0 +1,29 @@
+{
+   "type":"record",
+   "name":"GameResult",
+   "fields":[
+      {
+         "default":"",
+         "name":"user",
+         "type":"string"
+      },
+      {
+         "default":"",
+         "name":"team",
+         "type":"string"
+      },
+      {
+         "default":0,
+         "name":"score",
+         "type":"long"
+      },
+      {
+         "default":0,
+         "name":"finished_at",
+         "type":{
+            "logicalType":"timestamp-micros",
+            "type":"long"
+         }
+      }
+   ]
+}
