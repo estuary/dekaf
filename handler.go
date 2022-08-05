@@ -25,7 +25,11 @@ const (
 // ClusterID we will use when talking to clients.
 var ClusterID = "dekafclusterid"
 
-type MaxOffsetFn func(time.Time) int64
+// RecordsAvailableFn allows behavior controlling the number of available records the server should
+// emulate be provided as configuration when initializing the server. In a typical case, the
+// function could return a larger and larger value based on the passage of time since
+// initialization.
+type RecordsAvailableFn func() int64
 
 // Config defines the handler config
 type Config struct {
@@ -42,8 +46,8 @@ type Config struct {
 	MessageWaitDeadline time.Duration
 	// Debug dumps message request/response.
 	Debug bool
-	// MaxOffset returns the maximum available offset that the server should simulate as available.
-	MaxOffset MaxOffsetFn
+	// RecordsAvailable returns the number of available records the server should emulate.
+	RecordsAvailable RecordsAvailableFn
 }
 
 // A MessageProvider function is used to provide messages for a topic. The handler will request
@@ -240,9 +244,10 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 			ts = time.Unix(0, 0)
 		} else if reqTopic.Partitions[0].Timestamp == -1 {
 			// Latest = all the data up until now
-			ts = time.Now()
-			if h.config.MaxOffset != nil {
-				offset = h.config.MaxOffset(ts)
+			if h.config.RecordsAvailable != nil {
+				// Note: The returned offset is the "log end offset" (the offset of the next message
+				// that would be appended) and offsets are zero-indexed.
+				offset = h.config.RecordsAvailable()
 			} else {
 				offset = math.MaxInt64 // Unlimited data
 			}
@@ -425,11 +430,9 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 	var deadlineCtx, deadlineCancel = context.WithDeadline(ctx.parent, time.Now().Add(deadline))
 	defer deadlineCancel()
 
-	// Capture the time of this request so that we can calculate the max offset that should be
-	// available to any consumer.
-	maxOffsetAvailable := int64(math.MaxInt64)
-	if h.config.MaxOffset != nil {
-		maxOffsetAvailable = h.config.MaxOffset(time.Now())
+	numRecordsAvailable := int64(math.MaxInt64)
+	if h.config.RecordsAvailable != nil {
+		numRecordsAvailable = h.config.RecordsAvailable()
 	}
 
 	var responseChan = make(chan *protocol.FetchTopicResponse)
@@ -453,9 +456,10 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 			}
 
 			// If an offset is being requested that we don't yet have available, a partition
-			// response with no records should be returned.
+			// response with no records should be returned. Offsets are zero-indexed, so a requested
+			// offset of 0 with 0 records available means no records should be returned.
 			startingOffset := fetchTopic.Partitions[0].FetchOffset
-			if startingOffset > maxOffsetAvailable {
+			if startingOffset >= numRecordsAvailable {
 				responseChan <- &protocol.FetchTopicResponse{
 					Topic: fetchTopic.Topic,
 					PartitionResponses: []*protocol.FetchPartitionResponse{
@@ -481,7 +485,7 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 
 				// If we've exceeded the offsets for which there are messages available, there are
 				// no more available messages.
-				if thisOffset > maxOffsetAvailable {
+				if thisOffset >= numRecordsAvailable {
 					break
 				}
 
