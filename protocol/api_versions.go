@@ -22,4 +22,8 @@ var APIVersions = []APIVersion{
 	{APIKey: APIVersionsKey, MinVersion: 0, MaxVersion: 0},
 	{APIKey: CreateTopicsKey, MinVersion: 0, MaxVersion: 1},
 	{APIKey: DeleteTopicsKey, MinVersion: 0, MaxVersion: 0},
+	{APIKey: SaslAuthenticateKey, MinVersion: 0, MaxVersion: 1},
+	{APIKey: SaslHandshakeKey, MinVersion: 0, MaxVersion: 1},
+	// Force handshake v1, which uses SaslAuthenticate packets (wrapped in Kafka protocol).
+	// Apparently this does not work and we need to support v0 also?
 }

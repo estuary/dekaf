@@ -23,6 +23,12 @@ type Server struct {
 	responseCh   chan *Context
 }
 
+type AuthConnection struct {
+	conn         net.Conn
+	authComplete bool
+	user         string
+}
+
 // NewServer creates a server using the passed handler
 func NewServer(ctx context.Context, listen string, handler *Handler) (*Server, error) {
 
@@ -56,7 +62,15 @@ func NewServer(ctx context.Context, listen string, handler *Handler) (*Server, e
 					continue
 				}
 
-				go s.handleRequest(conn)
+				// This is a new connection. If auth is enabled, we should only allow API version
+				// requests if auth has not been completed yet.
+				// https://kafka.apache.org/protocol.html#sasl_handshake
+
+				go s.handleRequest(&AuthConnection{
+					conn:         conn,
+					authComplete: false,
+					user:         "",
+				})
 			}
 		}
 	}()
@@ -105,12 +119,12 @@ func (s *Server) Shutdown() error {
 	return nil
 }
 
-func (s *Server) handleRequest(conn net.Conn) {
-	defer conn.Close()
+func (s *Server) handleRequest(authReq *AuthConnection) {
+	defer authReq.conn.Close()
 
 	for {
 		p := make([]byte, 4)
-		_, err := io.ReadFull(conn, p[:])
+		_, err := io.ReadFull(authReq.conn, p[:])
 		if err == io.EOF {
 			break
 		}
@@ -127,7 +141,7 @@ func (s *Server) handleRequest(conn net.Conn) {
 		b := make([]byte, size+4) //+4 since we're going to copy the size into b
 		copy(b, p)
 
-		if _, err = io.ReadFull(conn, b[4:]); err != nil {
+		if _, err = io.ReadFull(authReq.conn, b[4:]); err != nil {
 			panic(err)
 		}
 
@@ -178,6 +192,8 @@ func (s *Server) handleRequest(conn net.Conn) {
 			req = &protocol.APIVersionsRequest{}
 		case protocol.SaslHandshakeKey:
 			req = &protocol.SaslHandshakeRequest{}
+		case protocol.SaslAuthenticateKey:
+			req = &protocol.SaslAuthenticateRequest{}
 		case protocol.CreateTopicsKey:
 			req = &protocol.CreateTopicRequests{}
 		case protocol.DeleteTopicsKey:
@@ -200,7 +216,7 @@ func (s *Server) handleRequest(conn net.Conn) {
 			parent: ctx,
 			header: header,
 			req:    req,
-			conn:   conn,
+			conn:   authReq,
 		}
 
 		s.requestCh <- reqCtx
@@ -212,7 +228,7 @@ func (s *Server) handleResponse(respCtx *Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = respCtx.conn.Write(b)
+	_, err = respCtx.conn.conn.Write(b)
 	return err
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +48,9 @@ type Config struct {
 	Debug bool
 	// RecordsAvailable returns the number of available records the server should emulate.
 	RecordsAvailable RecordsAvailableFn
+	// RequireAuth sets the server to require client authentication. Currently only SASL: PLAIN is
+	// supported.
+	RequireAuth bool
 }
 
 // A MessageProvider function is used to provide messages for a topic. The handler will request
@@ -107,34 +111,54 @@ runLoop:
 			}
 
 			var res protocol.ResponseBody
-			switch req := reqCtx.req.(type) {
-			case *protocol.FetchRequest:
-				res = h.handleFetch(reqCtx, req)
-			case *protocol.OffsetsRequest:
-				res = h.handleOffsets(reqCtx, req)
-			case *protocol.MetadataRequest:
-				res = h.handleMetadata(reqCtx, req)
-			case *protocol.OffsetCommitRequest:
-				res = h.handleOffsetCommit(reqCtx, req)
-			case *protocol.OffsetFetchRequest:
-				res = h.handleOffsetFetch(reqCtx, req)
-			case *protocol.FindCoordinatorRequest:
-				res = h.handleFindCoordinator(reqCtx, req)
-			case *protocol.JoinGroupRequest:
-				res = h.handleJoinGroup(reqCtx, req)
-			case *protocol.HeartbeatRequest:
-				res = h.handleHeartbeat(reqCtx, req)
-			case *protocol.LeaveGroupRequest:
-				res = h.handleLeaveGroup(reqCtx, req)
-			case *protocol.SyncGroupRequest:
-				res = h.handleSyncGroup(reqCtx, req)
-			case *protocol.APIVersionsRequest:
-				res = h.handleAPIVersions(reqCtx, req)
-			default:
-				log.Println("***********************************************************")
-				log.Printf("UNHANDLED REQUEST: %#v", req)
-				log.Println("***********************************************************")
-				continue
+
+			if h.config.RequireAuth && !reqCtx.conn.authComplete {
+				switch req := reqCtx.req.(type) {
+				case *protocol.APIVersionsRequest:
+					res = h.handleAPIVersions(reqCtx, req)
+				case *protocol.SaslHandshakeRequest:
+					res = h.handleSaslHandshake(reqCtx, req)
+				case *protocol.SaslAuthenticateRequest:
+					res = h.handleSaslAuthenticate(reqCtx, req)
+				default:
+					// TODO: Close the connection. This will require some re-structing of the
+					// request/response handling code.
+					continue
+				}
+			} else {
+
+				// TODO: Handle auth requests when auth is already done.
+
+				switch req := reqCtx.req.(type) {
+				case *protocol.FetchRequest:
+					res = h.handleFetch(reqCtx, req)
+				case *protocol.OffsetsRequest:
+					res = h.handleOffsets(reqCtx, req)
+				case *protocol.MetadataRequest:
+					res = h.handleMetadata(reqCtx, req)
+				case *protocol.OffsetCommitRequest:
+					res = h.handleOffsetCommit(reqCtx, req)
+				case *protocol.OffsetFetchRequest:
+					res = h.handleOffsetFetch(reqCtx, req)
+				case *protocol.FindCoordinatorRequest:
+					res = h.handleFindCoordinator(reqCtx, req)
+				case *protocol.JoinGroupRequest:
+					res = h.handleJoinGroup(reqCtx, req)
+				case *protocol.HeartbeatRequest:
+					res = h.handleHeartbeat(reqCtx, req)
+				case *protocol.LeaveGroupRequest:
+					res = h.handleLeaveGroup(reqCtx, req)
+				case *protocol.SyncGroupRequest:
+					res = h.handleSyncGroup(reqCtx, req)
+				case *protocol.APIVersionsRequest:
+					res = h.handleAPIVersions(reqCtx, req)
+				default:
+					log.Println("***********************************************************")
+					log.Printf("UNHANDLED REQUEST: %#v", req)
+					log.Println("***********************************************************")
+					continue
+				}
+
 			}
 
 			if h.config.Debug {
@@ -179,6 +203,47 @@ func (h *Handler) handleAPIVersions(ctx *Context, req *protocol.APIVersionsReque
 		ErrorCode:    0,
 		APIVersions:  protocol.APIVersions,
 		ThrottleTime: 0,
+	}
+}
+
+func (h *Handler) handleSaslHandshake(ctx *Context, req *protocol.SaslHandshakeRequest) *protocol.SaslHandshakeResponse {
+	return &protocol.SaslHandshakeResponse{
+		ErrorCode:         0,
+		EnabledMechanisms: []string{"PLAIN"},
+	}
+}
+
+func (h *Handler) handleSaslAuthenticate(ctx *Context, req *protocol.SaslAuthenticateRequest) *protocol.SaslAuthenticateResponse {
+	// TODO: This is just for testing.
+	reqUser := "my-test-user"
+	reqPassword := "my-test-password"
+
+	errInvalidUserOrPasswordMsg := "invalid user or password"
+
+	tokens := bytes.Split(req.SaslAuthBytes, []byte("\x00"))
+	if len(tokens) != 3 {
+		return &protocol.SaslAuthenticateResponse{
+			ErrorCode: 58, // SASL_AUTHENTICATION_FAILED
+			// ErrMsg:    &errInvalidUserOrPasswordMsg,
+		}
+	}
+
+	if !strings.EqualFold(reqUser, string(tokens[1])) || !strings.EqualFold(reqPassword, string(tokens[2])) {
+		return &protocol.SaslAuthenticateResponse{
+			ErrorCode: 58, // SASL_AUTHENTICATION_FAILED
+			ErrMsg:    &errInvalidUserOrPasswordMsg,
+		}
+	}
+
+	// Set user on the reqCtx
+	ctx.conn.user = string(tokens[1])
+
+	// Set connection as auth'd.
+	ctx.conn.authComplete = true
+
+	return &protocol.SaslAuthenticateResponse{
+		ErrorCode: 0,
+		// SessionLifetimeMs: int64(10 * time.Second),
 	}
 }
 

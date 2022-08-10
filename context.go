@@ -3,7 +3,6 @@ package dekaf
 import (
 	"context"
 	"fmt"
-	"io"
 	"sync"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 // Context holds a Kafka request/response pair for processing.
 type Context struct {
 	mu     sync.Mutex
-	conn   io.ReadWriter
+	conn   *AuthConnection
 	err    error
 	header *protocol.RequestHeader
 	parent context.Context
