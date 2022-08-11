@@ -454,41 +454,18 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 				return
 			}
 
-			// If an offset is being requested that we don't yet have available, a partition
-			// response with no records should be returned. Offsets are zero-indexed, so a requested
-			// offset of 0 with 0 records available means no records should be returned.
-			startingOffset := fetchTopic.Partitions[0].FetchOffset
-			if startingOffset >= numRecordsAvailable {
-				responseChan <- &protocol.FetchTopicResponse{
-					Topic: fetchTopic.Topic,
-					PartitionResponses: []*protocol.FetchPartitionResponse{
-						{
-							Partition:           0,
-							ErrorCode:           0,
-							HighWatermark:       math.MaxInt64,
-							LastStableOffset:    math.MaxInt64,
-							AbortedTransactions: nil,
-							RecordSet:           nil,
-						},
-					},
-				}
-				return
-			}
-
 			// Build RecordSet to respond to this topic.
 			var buf bytes.Buffer
-			for x := 0; x < h.config.MaxMessagesPerTopic; x++ {
-				// Each message in the RecordSet batch is from the "next" offset as we build the
-				// batch.
-				thisOffset := startingOffset + int64(x)
-
+			startingOffset := fetchTopic.Partitions[0].FetchOffset
+			for x := startingOffset; x < startingOffset+int64(h.config.MaxMessagesPerTopic); x++ {
 				// If we've exceeded the offsets for which there are messages available, there are
-				// no more available messages.
-				if thisOffset >= numRecordsAvailable {
+				// no more available messages. Offsets are zero-indexed, so a requested offset of 0
+				// with 0 records available means no records should be returned.
+				if x >= numRecordsAvailable {
 					break
 				}
 
-				offset, data, err := mp(deadlineCtx, thisOffset)
+				offset, data, err := mp(deadlineCtx, x)
 				if err == io.EOF {
 					// No more available messages.
 					break
@@ -525,9 +502,11 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 				}
 			}
 
-			// If no messages were fetched for this topic, return nothing.
-			if buf.Len() == 0 {
-				responseChan <- nil
+			// No messages means an empty record set, which needs to be encoded with a length of 0
+			// and not -1. Use an empty byte array here instead of nil to ensure correct encoding.
+			rs := buf.Bytes()
+			if rs == nil {
+				rs = []byte{}
 			}
 
 			responseChan <- &protocol.FetchTopicResponse{
@@ -539,7 +518,7 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 						HighWatermark:       math.MaxInt64,
 						LastStableOffset:    math.MaxInt64,
 						AbortedTransactions: nil,
-						RecordSet:           buf.Bytes(),
+						RecordSet:           rs,
 					},
 				},
 			}
