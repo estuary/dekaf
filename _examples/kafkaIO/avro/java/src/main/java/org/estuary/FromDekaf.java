@@ -20,7 +20,8 @@ import org.apache.beam.sdk.values.TypeDescriptors;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.Row;
-import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.VoidDeserializer;
 
 public class FromDekaf {
   public interface Options extends StreamingOptions {
@@ -60,23 +61,26 @@ public class FromDekaf {
 
     PCollection<GenericRecord> records = pipeline
         .apply("Read messages from Kafka",
-            KafkaIO.<String, GenericRecord>read()
+            KafkaIO.<Void, GenericRecord>read()
                 .withBootstrapServers(options.getBootstrapServer())
                 .withTopic(options.getInputTopic())
-                .withKeyDeserializer(StringDeserializer.class)
+                .withKeyDeserializer(VoidDeserializer.class)
                 .withValueDeserializer(
                     ConfluentSchemaRegistryDeserializerProvider.of(options.getRegistry(),
                         options.getInputTopic() + "-value"))
 
                 .withLogAppendTime()
                 .commitOffsetsInFinalize()
-                .withConsumerConfigUpdates(Map.of("group.id", "some-group", "auto.offset.reset", "earliest"))
+                .withConsumerConfigUpdates(
+                    Map.of(
+                        ConsumerConfig.GROUP_ID_CONFIG, "some-group",
+                        ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"))
                 .withoutMetadata())
         // Extract values as GenericRecords.
         .apply(MapElements.via(
-            new SimpleFunction<KV<String, GenericRecord>, GenericRecord>() {
+            new SimpleFunction<KV<Void, GenericRecord>, GenericRecord>() {
               @Override
-              public GenericRecord apply(KV<String, GenericRecord> kafkaVal) {
+              public GenericRecord apply(KV<Void, GenericRecord> kafkaVal) {
                 return kafkaVal.getValue();
               }
             }));

@@ -15,7 +15,9 @@ import org.apache.beam.sdk.transforms.JsonToRow;
 import org.apache.beam.sdk.transforms.Values;
 import org.apache.beam.sdk.values.TypeDescriptors;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.VoidDeserializer;
 
 public class FromDekaf {
   public interface Options extends StreamingOptions {
@@ -48,16 +50,19 @@ public class FromDekaf {
 
     PCollection<String> json = pipeline
         .apply("Read messages from Kafka",
-            KafkaIO.<String, String>read()
+            KafkaIO.<Void, String>read()
                 // Standard configurations.
                 .withBootstrapServers(options.getBootstrapServer())
                 .withTopic(options.getInputTopic())
-                .withKeyDeserializer(StringDeserializer.class)
+                .withKeyDeserializer(VoidDeserializer.class)
                 .withValueDeserializer(StringDeserializer.class)
 
                 .withLogAppendTime()
                 .commitOffsetsInFinalize()
-                .withConsumerConfigUpdates(Map.of("group.id", "some-group", "auto.offset.reset", "earliest"))
+                .withConsumerConfigUpdates(
+                    Map.of(
+                        ConsumerConfig.GROUP_ID_CONFIG, "some-group",
+                        ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"))
                 .withoutMetadata())
         // Extract values as JSON.
         .apply(Values.<String>create());
