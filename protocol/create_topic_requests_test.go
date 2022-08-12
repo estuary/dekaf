@@ -13,7 +13,7 @@ func TestCreateTopicRequests(t *testing.T) {
 		NumPartitions:     99,
 		ReplicationFactor: 3,
 		ReplicaAssignment: map[int32][]int32{
-			1: []int32{2, 3, 4},
+			1: {2, 3, 4},
 		},
 		Configs: map[string]*string{"config_key": strPointer("config_val")},
 	}}}

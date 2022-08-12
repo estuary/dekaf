@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/estuary/dekaf/pkg/models/inmem"
 	"github.com/estuary/dekaf/protocol"
 )
 
@@ -47,6 +48,9 @@ type Config struct {
 	Debug bool
 	// RecordsAvailable returns the number of available records the server should emulate.
 	RecordsAvailable RecordsAvailableFn
+	// Offsets provides a means for the handler to store offsets for a given
+	// topic/partition/consumer group.
+	Offsets OffsetStorer
 }
 
 // A MessageProvider function is used to provide messages for a topic. The handler will request
@@ -54,6 +58,11 @@ type Config struct {
 // to the request. If there are no more messages return io.EOF for the error. This function may block
 // up until the provided context.Context cancels in which case it should return io.EOF.
 type MessageProvider func(ctx context.Context, startOffset int64) (int64, []byte, error)
+
+type OffsetStorer interface {
+	PutOffset(topic string, group string, partition int, offset int) error
+	GetOffset(topic string, group string, partition int) int
+}
 
 // Handler configuration.
 type Handler struct {
@@ -85,6 +94,10 @@ func NewHandler(config Config) (*Handler, error) {
 func (c *Config) validate() error {
 	if c.Host == "" || c.Port == 0 {
 		return errors.New("invalid config")
+	}
+
+	if c.Offsets == nil {
+		c.Offsets = &inmem.OffsetStore{}
 	}
 	return nil
 }
@@ -273,11 +286,10 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 }
 
 // OffsetFetch returns the last committed offset value for the topic.
-// We may need to update this value in response to the OffsetCommit request.
 func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchRequest) *protocol.OffsetFetchResponse {
+	// TODO: Group considerations. Is the consumer a member of this group & is the consumer assigned
+	// to this partition? Ref: https://issues.apache.org/jira/browse/KAFKA-3072
 
-	h.RLock()
-	defer h.RUnlock()
 	var emptyString string
 
 	var offsetFetchTopicResponse []protocol.OffsetFetchTopicResponse
@@ -286,16 +298,21 @@ func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchReque
 			continue
 		}
 
+		topicPartitions := []protocol.OffsetFetchPartition{}
+		for _, p := range reqTopic.Partitions {
+			got := h.config.Offsets.GetOffset(reqTopic.Topic, req.GroupID, int(p))
+
+			topicPartitions = append(topicPartitions, protocol.OffsetFetchPartition{
+				Partition: p,
+				ErrorCode: 0,
+				Metadata:  &emptyString,
+				Offset:    int64(got),
+			})
+		}
+
 		offsetFetchTopicResponse = append(offsetFetchTopicResponse, protocol.OffsetFetchTopicResponse{
-			Topic: reqTopic.Topic,
-			Partitions: []protocol.OffsetFetchPartition{
-				{
-					Partition: 0,
-					ErrorCode: 0,
-					Metadata:  &emptyString,
-					Offset:    -1, // None
-				},
-			},
+			Topic:      reqTopic.Topic,
+			Partitions: topicPartitions,
 		})
 
 	}
@@ -309,6 +326,9 @@ func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchReque
 
 // OffsetCommit sets the last committed offset value.
 func (h *Handler) handleOffsetCommit(ctx *Context, req *protocol.OffsetCommitRequest) *protocol.OffsetCommitResponse {
+	// TODO: Handle "simple consumer" requests that are not part of a consumer group. As of now,
+	// this condition is undefined, and we rely on clients to require a consumer group when
+	// comitting offsets.
 
 	var offsetCommitTopicResponse []protocol.OffsetCommitTopicResponse
 	for _, reqTopic := range req.Topics {
@@ -316,14 +336,21 @@ func (h *Handler) handleOffsetCommit(ctx *Context, req *protocol.OffsetCommitReq
 			continue
 		}
 
+		topicPartitions := []protocol.OffsetCommitPartitionResponse{}
+		for _, p := range reqTopic.Partitions {
+			// TODO: Handle errors.
+			_ = h.config.Offsets.PutOffset(reqTopic.Topic, req.GroupID, int(p.Partition), int(p.Offset))
+
+			topicPartitions = append(topicPartitions, protocol.OffsetCommitPartitionResponse{
+				Partition: p.Partition,
+				ErrorCode: 0,
+			})
+
+		}
+
 		offsetCommitTopicResponse = append(offsetCommitTopicResponse, protocol.OffsetCommitTopicResponse{
-			Topic: reqTopic.Topic,
-			PartitionResponses: []protocol.OffsetCommitPartitionResponse{
-				{
-					Partition: 0,
-					ErrorCode: 0,
-				},
-			},
+			Topic:              reqTopic.Topic,
+			PartitionResponses: topicPartitions,
 		})
 	}
 
@@ -515,8 +542,8 @@ func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protoco
 					{
 						Partition:           0,
 						ErrorCode:           0,
-						HighWatermark:       math.MaxInt64,
-						LastStableOffset:    math.MaxInt64,
+						HighWatermark:       numRecordsAvailable - 1,
+						LastStableOffset:    numRecordsAvailable - 1,
 						AbortedTransactions: nil,
 						RecordSet:           rs,
 					},
