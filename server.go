@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"sync"
 
 	"github.com/estuary/dekaf/protocol"
 )
@@ -14,101 +13,57 @@ import (
 // Server is used to handle the TCP connections, decode requests,
 // defer to the handler, and encode the responses.
 type Server struct {
-	protocolLn   *net.TCPListener
-	handler      *Handler
-	shutdown     bool
-	shutdownCh   chan struct{}
-	shutdownLock sync.Mutex
-	requestCh    chan *Context
-	responseCh   chan *Context
+	protocolLn *net.TCPListener
+	handler    *Handler
 }
 
 // NewServer creates a server using the passed handler
 func NewServer(ctx context.Context, listen string, handler *Handler) (*Server, error) {
-
-	s := &Server{
-		handler:    handler,
-		shutdownCh: make(chan struct{}),
-		requestCh:  make(chan *Context, 1024),
-		responseCh: make(chan *Context, 1024),
-	}
-
 	protocolAddr, err := net.ResolveTCPAddr("tcp", listen)
 	if err != nil {
 		return nil, fmt.Errorf("resolve: %w", err)
 	}
-	if s.protocolLn, err = net.ListenTCP("tcp", protocolAddr); err != nil {
+	ln, err := net.ListenTCP("tcp", protocolAddr)
+	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
 
+	s := &Server{
+		handler:    handler,
+		protocolLn: ln,
+	}
+
 	go func() {
-	acceptLoop:
 		for {
 			select {
 			case <-ctx.Done():
-				break acceptLoop
-			case <-s.shutdownCh:
-				break acceptLoop
+				return
 			default:
-				conn, err := s.protocolLn.Accept()
+				conn, err := ln.Accept()
 				if err != nil {
 					log.Printf("server: listener accept error: %v", err)
 					continue
 				}
 
-				go s.handleRequest(conn)
+				go s.handleConn(ctx, conn)
 			}
 		}
 	}()
-
-	go func() {
-	responseLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				break responseLoop
-			case <-s.shutdownCh:
-				break responseLoop
-			case respCtx := <-s.responseCh:
-				if err := s.handleResponse(respCtx); err != nil {
-					log.Printf("server: handle response error: %v", err)
-				}
-			}
-		}
-	}()
-
-	go s.handler.Run(ctx, s.requestCh, s.responseCh)
 
 	return s, nil
-
 }
 
-// Shutdown closes the service.
-func (s *Server) Shutdown() error {
-	s.shutdownLock.Lock()
-	defer s.shutdownLock.Unlock()
-
-	if s.shutdown {
-		return nil
-	}
-
-	s.shutdown = true
-	close(s.shutdownCh)
-
-	if err := s.handler.Shutdown(); err != nil {
-		return err
-	}
-	if err := s.protocolLn.Close(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *Server) handleRequest(conn net.Conn) {
+// handleConn runs in its own goroutine to sequentially process and respond to requests on a single connection.
+func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		p := make([]byte, 4)
 		_, err := io.ReadFull(conn, p[:])
 		if err == io.EOF {
@@ -194,25 +149,28 @@ func (s *Server) handleRequest(conn net.Conn) {
 			panic(err)
 		}
 
-		ctx := context.Background()
-
-		reqCtx := &Context{
+		res := s.handler.HandleReq(ctx, &Context{
 			parent: ctx,
 			header: header,
 			req:    req,
 			conn:   conn,
-		}
+		})
 
-		s.requestCh <- reqCtx
+		if res != nil {
+			writeResponse(&protocol.Response{
+				CorrelationID: header.CorrelationID,
+				Body:          res,
+			}, conn)
+		}
 	}
 }
 
-func (s *Server) handleResponse(respCtx *Context) error {
-	b, err := protocol.Encode(respCtx.res.(protocol.Encoder))
+func writeResponse(res *protocol.Response, conn net.Conn) error {
+	b, err := protocol.Encode(res)
 	if err != nil {
 		return err
 	}
-	_, err = respCtx.conn.Write(b)
+	_, err = conn.Write(b)
 	return err
 }
 

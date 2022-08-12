@@ -109,66 +109,45 @@ func (h *Handler) AddTopic(name string, mp MessageProvider) {
 	h.Unlock()
 }
 
-// Run starts a loop to handle requests send back responses.
-func (h *Handler) Run(ctx context.Context, requests <-chan *Context, responses chan<- *Context) {
-runLoop:
-	for {
-		select {
-		case reqCtx := <-requests:
-			if reqCtx == nil {
-				break runLoop
-			}
-
-			var res protocol.ResponseBody
-			switch req := reqCtx.req.(type) {
-			case *protocol.FetchRequest:
-				res = h.handleFetch(reqCtx, req)
-			case *protocol.OffsetsRequest:
-				res = h.handleOffsets(reqCtx, req)
-			case *protocol.MetadataRequest:
-				res = h.handleMetadata(reqCtx, req)
-			case *protocol.OffsetCommitRequest:
-				res = h.handleOffsetCommit(reqCtx, req)
-			case *protocol.OffsetFetchRequest:
-				res = h.handleOffsetFetch(reqCtx, req)
-			case *protocol.FindCoordinatorRequest:
-				res = h.handleFindCoordinator(reqCtx, req)
-			case *protocol.JoinGroupRequest:
-				res = h.handleJoinGroup(reqCtx, req)
-			case *protocol.HeartbeatRequest:
-				res = h.handleHeartbeat(reqCtx, req)
-			case *protocol.LeaveGroupRequest:
-				res = h.handleLeaveGroup(reqCtx, req)
-			case *protocol.SyncGroupRequest:
-				res = h.handleSyncGroup(reqCtx, req)
-			case *protocol.APIVersionsRequest:
-				res = h.handleAPIVersions(reqCtx, req)
-			default:
-				log.Println("***********************************************************")
-				log.Printf("UNHANDLED REQUEST: %#v", req)
-				log.Println("***********************************************************")
-				continue
-			}
-
-			if h.config.Debug {
-				log.Println("-----------------------------------------")
-				log.Printf("REQ: %#v", reqCtx.req)
-				log.Printf("RES: %#v", res)
-			}
-
-			responses <- &Context{
-				parent: reqCtx,
-				conn:   reqCtx.conn,
-				header: reqCtx.header,
-				res: &protocol.Response{
-					CorrelationID: reqCtx.header.CorrelationID,
-					Body:          res,
-				},
-			}
-		case <-ctx.Done():
-			break runLoop
-		}
+func (h *Handler) HandleReq(ctx context.Context, reqCtx *Context) protocol.ResponseBody {
+	var res protocol.ResponseBody
+	switch req := reqCtx.req.(type) {
+	case *protocol.FetchRequest:
+		res = h.handleFetch(reqCtx, req)
+	case *protocol.OffsetsRequest:
+		res = h.handleOffsets(reqCtx, req)
+	case *protocol.MetadataRequest:
+		res = h.handleMetadata(reqCtx, req)
+	case *protocol.OffsetCommitRequest:
+		res = h.handleOffsetCommit(reqCtx, req)
+	case *protocol.OffsetFetchRequest:
+		res = h.handleOffsetFetch(reqCtx, req)
+	case *protocol.FindCoordinatorRequest:
+		res = h.handleFindCoordinator(reqCtx, req)
+	case *protocol.JoinGroupRequest:
+		res = h.handleJoinGroup(reqCtx, req)
+	case *protocol.HeartbeatRequest:
+		res = h.handleHeartbeat(reqCtx, req)
+	case *protocol.LeaveGroupRequest:
+		res = h.handleLeaveGroup(reqCtx, req)
+	case *protocol.SyncGroupRequest:
+		res = h.handleSyncGroup(reqCtx, req)
+	case *protocol.APIVersionsRequest:
+		res = h.handleAPIVersions(reqCtx, req)
+	default:
+		log.Println("***********************************************************")
+		log.Printf("UNHANDLED REQUEST: %#v", req)
+		log.Println("***********************************************************")
+		return nil
 	}
+
+	if h.config.Debug {
+		log.Println("-----------------------------------------")
+		log.Printf("REQ: %#v", reqCtx.req)
+		log.Printf("RES: %#v", res)
+	}
+
+	return res
 }
 
 // Shutdown the handler.

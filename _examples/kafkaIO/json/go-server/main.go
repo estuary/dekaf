@@ -35,7 +35,7 @@ func main() {
 	handler, err := dekaf.NewHandler(dekaf.Config{
 		Host:             *host,
 		Port:             int32(*port),
-		Debug:            true,
+		Debug:            false,
 		RecordsAvailable: records(time.Now()),
 	})
 	if err != nil {
@@ -49,9 +49,7 @@ func main() {
 		panic(err)
 	}
 	log.Printf("server listening on %s", server.Addr().String())
-
 	<-ctx.Done()
-	server.Shutdown()
 }
 
 type GameResult struct {

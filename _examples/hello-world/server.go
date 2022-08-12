@@ -34,11 +34,7 @@ func main() {
 		panic(err)
 	}
 	log.Printf("server listening on %s", server.Addr().String())
-
-	// Wait until signal
 	<-ctx.Done()
-	server.Shutdown()
-
 }
 
 type SampleRecord struct {

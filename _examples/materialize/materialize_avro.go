@@ -86,9 +86,7 @@ func main() {
 		panic(err)
 	}
 	log.Printf("server listening on %s", server.Addr().String())
-
 	<-ctx.Done()
-	server.Shutdown()
 }
 
 var schema = avro.MustParse(`{
