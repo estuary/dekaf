@@ -70,8 +70,7 @@ public class FromDekaf {
                         options.getInputTopic() + "-value"))
 
                 .withLogAppendTime()
-                .withConsumerConfigUpdates(
-                    Map.of(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"))
+                .withConsumerConfigUpdates(Map.of(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"))
                 .withoutMetadata())
         // Extract values as GenericRecords.
         .apply(MapElements.via(
