@@ -35,8 +35,9 @@ func main() {
 	handler, err := dekaf.NewHandler(dekaf.Config{
 		Host:             *host,
 		Port:             int32(*port),
-		Debug:            false,
+		Debug:            true,
 		RecordsAvailable: records(time.Now()),
+		LimitedAPI:       true,
 	})
 	if err != nil {
 		panic(err)

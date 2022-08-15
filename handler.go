@@ -51,6 +51,9 @@ type Config struct {
 	// Offsets provides a means for the handler to store offsets for a given
 	// topic/partition/consumer group.
 	Offsets OffsetStorer
+	// Limited API configures the handler to respond to a minimal set of requests, which represent
+	// the bare minimum to enable a standalone consumer that will manage its own offsets.
+	LimitedAPI bool
 }
 
 // A MessageProvider function is used to provide messages for a topic. The handler will request
@@ -109,7 +112,39 @@ func (h *Handler) AddTopic(name string, mp MessageProvider) {
 	h.Unlock()
 }
 
+func (h *Handler) logDisallowed(reqCtx *Context) {
+	var shouldLog bool
+
+	switch reqCtx.req.(type) {
+	case *protocol.OffsetFetchRequest:
+		shouldLog = true
+	case *protocol.OffsetCommitRequest:
+		shouldLog = true
+	case *protocol.FindCoordinatorRequest:
+		shouldLog = true
+	case *protocol.JoinGroupRequest:
+		shouldLog = true
+	case *protocol.HeartbeatRequest:
+		shouldLog = true
+	case *protocol.LeaveGroupRequest:
+		shouldLog = true
+	case *protocol.SyncGroupRequest:
+		shouldLog = true
+	}
+
+	if shouldLog {
+		log.Println("***********************************************************")
+		log.Printf("DISALLOWED REQUEST: %#v", reqCtx.req)
+		log.Println("***********************************************************")
+	}
+}
+
 func (h *Handler) HandleReq(ctx context.Context, reqCtx *Context) protocol.ResponseBody {
+	// Log receiving any requests which should not be allowed if using the "limited" API.
+	if h.config.LimitedAPI {
+		h.logDisallowed(reqCtx)
+	}
+
 	var res protocol.ResponseBody
 	switch req := reqCtx.req.(type) {
 	case *protocol.FetchRequest:
@@ -166,10 +201,15 @@ func (h *Handler) handleAPIVersions(ctx *Context, req *protocol.APIVersionsReque
 		}
 	}
 
+	vs := protocol.APIVersions
+	if h.config.LimitedAPI {
+		vs = protocol.APIVersionsLimited
+	}
+
 	return &protocol.APIVersionsResponse{
 		APIVersion:   req.APIVersion,
 		ErrorCode:    0,
-		APIVersions:  protocol.APIVersions,
+		APIVersions:  vs,
 		ThrottleTime: 0,
 	}
 }
@@ -266,9 +306,6 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 
 // OffsetFetch returns the last committed offset value for the topic.
 func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchRequest) *protocol.OffsetFetchResponse {
-	// TODO: Group considerations. Is the consumer a member of this group & is the consumer assigned
-	// to this partition? Ref: https://issues.apache.org/jira/browse/KAFKA-3072
-
 	var emptyString string
 
 	var offsetFetchTopicResponse []protocol.OffsetFetchTopicResponse
@@ -305,10 +342,6 @@ func (h *Handler) handleOffsetFetch(ctx *Context, req *protocol.OffsetFetchReque
 
 // OffsetCommit sets the last committed offset value.
 func (h *Handler) handleOffsetCommit(ctx *Context, req *protocol.OffsetCommitRequest) *protocol.OffsetCommitResponse {
-	// TODO: Handle "simple consumer" requests that are not part of a consumer group. As of now,
-	// this condition is undefined, and we rely on clients to require a consumer group when
-	// comitting offsets.
-
 	var offsetCommitTopicResponse []protocol.OffsetCommitTopicResponse
 	for _, reqTopic := range req.Topics {
 		if _, ok := h.topics[reqTopic.Topic]; !ok {
