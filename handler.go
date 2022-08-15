@@ -7,9 +7,10 @@ import (
 	"io"
 	"log"
 	"math"
-	"sync"
 	"time"
 
+	"github.com/estuary/dekaf/coordinator"
+	coordinatorStore "github.com/estuary/dekaf/coordinator/store/inmem"
 	"github.com/estuary/dekaf/pkg/models/inmem"
 	"github.com/estuary/dekaf/protocol"
 )
@@ -66,9 +67,9 @@ type OffsetStorer interface {
 
 // Handler configuration.
 type Handler struct {
-	config Config
-	topics map[string]MessageProvider
-	sync.RWMutex
+	config           Config
+	topics           map[string]MessageProvider
+	groupCoordinator *coordinator.GroupCoordinator
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -78,8 +79,9 @@ func NewHandler(config Config) (*Handler, error) {
 	}
 
 	var h = &Handler{
-		config: config,
-		topics: make(map[string]MessageProvider),
+		config:           config,
+		topics:           make(map[string]MessageProvider),
+		groupCoordinator: coordinator.NewGroupCoordinator(coordinatorStore.New()),
 	}
 
 	// Handle defaults for unset values.
@@ -104,9 +106,7 @@ func (c *Config) validate() error {
 
 // AddTopic adds a new topic to the server and registers the MessageProvider with that topic.
 func (h *Handler) AddTopic(name string, mp MessageProvider) {
-	h.Lock()
 	h.topics[name] = mp
-	h.Unlock()
 }
 
 func (h *Handler) HandleReq(ctx context.Context, reqCtx *Context) protocol.ResponseBody {
@@ -114,6 +114,7 @@ func (h *Handler) HandleReq(ctx context.Context, reqCtx *Context) protocol.Respo
 	switch req := reqCtx.req.(type) {
 	case *protocol.FetchRequest:
 		res = h.handleFetch(reqCtx, req)
+		return res // TODO: Temporary to prevent log spam.
 	case *protocol.OffsetsRequest:
 		res = h.handleOffsets(reqCtx, req)
 	case *protocol.MetadataRequest:
@@ -150,11 +151,6 @@ func (h *Handler) HandleReq(ctx context.Context, reqCtx *Context) protocol.Respo
 	return res
 }
 
-// Shutdown the handler.
-func (h *Handler) Shutdown() error {
-	return nil
-}
-
 // API Versions request sent by server to see what API's are available.
 func (h *Handler) handleAPIVersions(ctx *Context, req *protocol.APIVersionsRequest) *protocol.APIVersionsResponse {
 
@@ -176,10 +172,6 @@ func (h *Handler) handleAPIVersions(ctx *Context, req *protocol.APIVersionsReque
 
 // Metadata request gets info about topics available and the brokers for the topics.
 func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *protocol.MetadataResponse {
-
-	h.RLock()
-	defer h.RUnlock()
-
 	var topicMetadata []*protocol.TopicMetadata
 	for _, topicName := range req.Topics {
 		if _, ok := h.topics[topicName]; !ok {
@@ -218,10 +210,6 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 
 // Offset request gets info about topic available messages and offsets.
 func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *protocol.OffsetsResponse {
-
-	h.RLock()
-	defer h.RUnlock()
-
 	var offsetRespones []*protocol.OffsetResponse
 	for _, reqTopic := range req.Topics {
 		if _, ok := h.topics[reqTopic.Topic]; !ok {
@@ -358,10 +346,27 @@ func (h *Handler) handleFindCoordinator(ctx *Context, req *protocol.FindCoordina
 
 // Join Group asks to join a group.
 func (h *Handler) handleJoinGroup(ctx *Context, req *protocol.JoinGroupRequest) *protocol.JoinGroupResponse {
+	log.Printf("handleJoinGroup, groupid: %s, memberid: %s", req.GroupID, req.MemberID)
+
+	// This will block until the leaderID is available, which only happens once all expected members
+	// have joined.
+	leaderID, memberID, members := h.groupCoordinator.AddMemberToGroup(req)
 
 	var protoMetadata []byte
 	if len(req.GroupProtocols) > 0 {
-		protoMetadata = req.GroupProtocols[0].ProtocolMetadata
+		protoMetadata = req.GroupProtocols[0].ProtocolMetadata // TODO: What is this?
+	}
+
+	protoMembers := []protocol.Member{}
+
+	// Only the leader needs the full list of members.
+	if memberID == leaderID {
+		for _, m := range members {
+			protoMembers = append(protoMembers, protocol.Member{
+				MemberID:       m,
+				MemberMetadata: protoMetadata,
+			})
+		}
 	}
 
 	return &protocol.JoinGroupResponse{
@@ -369,31 +374,29 @@ func (h *Handler) handleJoinGroup(ctx *Context, req *protocol.JoinGroupRequest) 
 		ThrottleTime:  0,
 		ErrorCode:     0,
 		GenerationID:  1,
-		GroupProtocol: "range",
-		LeaderID:      ctx.header.ClientID + memberGroupIDSuffix,
-		MemberID:      ctx.header.ClientID + memberGroupIDSuffix,
-		Members: []protocol.Member{
-			{
-				MemberID:       ctx.header.ClientID + memberGroupIDSuffix,
-				MemberMetadata: protoMetadata,
-			},
-		},
+		GroupProtocol: "range", // TODO: Base this off a common value from the consumers.
+		LeaderID:      leaderID,
+		MemberID:      memberID,
+		Members:       protoMembers,
 	}
 }
 
-// Sync Group asks to sync a group which basically will tell the client that it is the main consumer for the group.
+// The group leader will have sent in a partition list in their sync group response.
+// Tell the clients what partitions they are assigned.
+// The clients must already know what the partitions are via a metadata request earlier.
 func (h *Handler) handleSyncGroup(ctx *Context, req *protocol.SyncGroupRequest) *protocol.SyncGroupResponse {
+	log.Printf("handleSyncGroup, groupid: %s, memberid: %s", req.GroupID, req.MemberID)
 
-	var memberAssignment []byte
-	if len(req.GroupAssignments) > 0 {
-		memberAssignment = req.GroupAssignments[0].MemberAssignment
-	}
+	// This will block until all expected members have sync'd. The leader is responsible for
+	// supplying member assignments. We do not need to deserialize the group assignments for each
+	// member, and return the leader's assignments directly as bytes.
+	assignment := h.groupCoordinator.SyncMemberForGroup(req)
 
 	return &protocol.SyncGroupResponse{
 		APIVersion:       req.APIVersion,
 		ThrottleTime:     0,
 		ErrorCode:        0,
-		MemberAssignment: memberAssignment,
+		MemberAssignment: assignment,
 	}
 }
 
@@ -418,10 +421,6 @@ func (h *Handler) handleLeaveGroup(ctx *Context, req *protocol.LeaveGroupRequest
 
 // Fetch data handles returning data for the requested topics.
 func (h *Handler) handleFetch(ctx *Context, req *protocol.FetchRequest) *protocol.FetchResponse {
-
-	h.RLock()
-	defer h.RUnlock()
-
 	// Setup the deadline to respond.
 	var deadline = h.config.MessageWaitDeadline
 	if deadline == 0 {
