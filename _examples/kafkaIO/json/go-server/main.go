@@ -37,6 +37,7 @@ func main() {
 		Port:             int32(*port),
 		Debug:            false,
 		RecordsAvailable: records(time.Now()),
+		LimitedAPI:       true,
 	})
 	if err != nil {
 		panic(err)

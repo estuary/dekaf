@@ -23,3 +23,11 @@ var APIVersions = []APIVersion{
 	{APIKey: CreateTopicsKey, MinVersion: 0, MaxVersion: 1},
 	{APIKey: DeleteTopicsKey, MinVersion: 0, MaxVersion: 0},
 }
+
+var APIVersionsLimited = []APIVersion{
+	{APIKey: ProduceKey, MinVersion: 0, MaxVersion: 2}, // Python beam connector requires this, although it does not use it.
+	{APIKey: FetchKey, MinVersion: 0, MaxVersion: 3},
+	{APIKey: OffsetsKey, MinVersion: 0, MaxVersion: 1},
+	{APIKey: MetadataKey, MinVersion: 0, MaxVersion: 2},
+	{APIKey: APIVersionsKey, MinVersion: 0, MaxVersion: 0},
+}

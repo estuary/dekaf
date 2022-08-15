@@ -58,10 +58,8 @@ public class FromDekaf {
                 .withValueDeserializer(StringDeserializer.class)
 
                 .withLogAppendTime()
-                .commitOffsetsInFinalize()
                 .withConsumerConfigUpdates(
                     Map.of(
-                        ConsumerConfig.GROUP_ID_CONFIG, "some-group",
                         ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"))
                 .withoutMetadata())
         // Extract values as JSON.
