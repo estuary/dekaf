@@ -220,6 +220,14 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 	h.RLock()
 	defer h.RUnlock()
 
+	// For the case of no topics specified in the request, the protocol requires returning
+	// information about ALL the topics.
+	if len(req.Topics) == 0 {
+		for t := range h.topics {
+			req.Topics = append(req.Topics, t)
+		}
+	}
+
 	var topicMetadata []*protocol.TopicMetadata
 	for _, topicName := range req.Topics {
 		if _, ok := h.topics[topicName]; !ok {
