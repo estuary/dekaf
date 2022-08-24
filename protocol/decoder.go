@@ -266,7 +266,9 @@ func (d *ByteDecoder) StringArray() ([]string, error) {
 	n := int(Encoding.Uint32(d.b[d.off:]))
 	d.off += 4
 
-	if n == 0 {
+	// TODO(whb): Checking for remaining bytes here as a workaround to Python client requests
+	// appearing to use compact strings / compact nullable strings for v2 API calls.
+	if n == 0 || d.remaining() == 0 {
 		return nil, nil
 	}
 
