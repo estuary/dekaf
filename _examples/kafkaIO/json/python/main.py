@@ -7,6 +7,9 @@ import typing
 
 import apache_beam as beam
 from apache_beam.io.external.kafka import ReadFromKafka
+from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.options.pipeline_options import SetupOptions
+from apache_beam.options.pipeline_options import StandardOptions
 
 logging.getLogger().setLevel(logging.WARN)
 
@@ -18,11 +21,12 @@ class GameResult(typing.NamedTuple):
     finished_at: date
 
 
-def run(args):
-    pipeline_options = beam.options.pipeline_options.PipelineOptions(
-        runner="Direct",
-        streaming=True,
-    )
+def run(parser, argv=None):
+    known_args, pipeline_args = parser.parse_known_args(argv)
+
+    pipeline_options = PipelineOptions(pipeline_args)
+    pipeline_options.view_as(SetupOptions).save_main_session = True
+    pipeline_options.view_as(StandardOptions).streaming = True
 
     p = beam.Pipeline(options=pipeline_options)
 
@@ -30,15 +34,13 @@ def run(args):
         p
         | "read" >> ReadFromKafka(
             consumer_config={
-                'bootstrap.servers': args.bootstrap_servers,
-                'auto.offset.reset': "earliest",
+                'bootstrap.servers': known_args.bootstrap_servers,
+                'auto.offset.reset': 'earliest',
             },
-            topics=[args.topic],
+            topics=[known_args.topic],
             # ByteArrayDeserializer is the default for both key and value; declaring explicitly here for clarity.
             key_deserializer="org.apache.kafka.common.serialization.ByteArrayDeserializer",
             value_deserializer="org.apache.kafka.common.serialization.ByteArrayDeserializer",
-            # Needed workaround for demo, see https://github.com/apache/beam/issues/20979
-            max_num_records=10,
         )
         | "deserialize" >> beam.Map(lambda x: json.loads(x[1]))
         | "as types" >> beam.Map(lambda x: GameResult(**x)).with_output_types(GameResult)
@@ -50,8 +52,7 @@ def run(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Beam example with JSON.")
+    parser = argparse.ArgumentParser()
 
     # Servers must be accessible from the docker container that the beam runtime will start to run
     # the Java extension service. If running the kafka/registry servers on the same localhost as
@@ -66,4 +67,4 @@ if __name__ == "__main__":
     parser.add_argument('-t', dest="topic", required=True,
                         help="Topic name")
 
-    run(parser.parse_args())
+    run(parser)

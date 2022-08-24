@@ -25,9 +25,11 @@ var APIVersions = []APIVersion{
 }
 
 var APIVersionsLimited = []APIVersion{
-	{APIKey: ProduceKey, MinVersion: 0, MaxVersion: 2}, // Python beam connector requires this, although it does not use it.
+	{APIKey: OffsetFetchKey, MinVersion: 0, MaxVersion: 2},     // Required for Python Beam KafkaIO connector
+	{APIKey: FindCoordinatorKey, MinVersion: 0, MaxVersion: 0}, // Required for Python Beam KafkaIO connector
+	{APIKey: ProduceKey, MinVersion: 0, MaxVersion: 2},         // Required for (but not used by) Python Beam KafkaIO connector
 	{APIKey: FetchKey, MinVersion: 0, MaxVersion: 3},
 	{APIKey: OffsetsKey, MinVersion: 0, MaxVersion: 1},
 	{APIKey: MetadataKey, MinVersion: 0, MaxVersion: 2},
-	{APIKey: APIVersionsKey, MinVersion: 0, MaxVersion: 0},
+	{APIKey: APIVersionsKey, MinVersion: 0, MaxVersion: 3},
 }

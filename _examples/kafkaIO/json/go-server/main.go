@@ -22,9 +22,10 @@ func records(start time.Time) dekaf.RecordsAvailableFn {
 }
 
 var (
-	host  = flag.String("host", "localhost", "Host of emulation server")
-	port  = flag.Int("port", 9092, "Port to listen on")
-	topic = flag.String("topic", "game-results", "Topic to emulate results on")
+	advertiseHost = flag.String("advertise-host", "localhost", "Host clients will be instructed to connect to")
+	advertisePort = flag.Int("advertise-port", 9092, "Port clients will be instructed to connect to")
+	listenPort    = flag.Int("listen-port", 9092, "Port the server will listen on")
+	topic         = flag.String("topic", "game-results", "Topic to emulate results on")
 )
 
 func main() {
@@ -33,8 +34,9 @@ func main() {
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
 
 	handler, err := dekaf.NewHandler(dekaf.Config{
-		Host:             *host,
-		Port:             int32(*port),
+		AdvertiseHost:    *advertiseHost,
+		AdvertisePort:    *advertisePort,
+		ListenPort:       *listenPort,
 		Debug:            false,
 		RecordsAvailable: records(time.Now()),
 		LimitedAPI:       true,
@@ -45,7 +47,7 @@ func main() {
 
 	handler.AddTopic(*topic, gameResultHandler)
 
-	server, err := dekaf.NewServer(ctx, fmt.Sprintf(":%d", *port), handler)
+	server, err := dekaf.NewServer(ctx, fmt.Sprintf(":%d", *listenPort), handler)
 	if err != nil {
 		panic(err)
 	}

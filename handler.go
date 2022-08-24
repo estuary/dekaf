@@ -34,9 +34,12 @@ type RecordsAvailableFn func() int64
 // Config defines the handler config
 type Config struct {
 	// The Host we should tell Kafka clients to connect to.
-	Host string
+	AdvertiseHost string
 	// The Port we should tell Kafka clients to connect to.
-	Port int32
+	AdvertisePort int
+	// The Port the server should listen on. AdvertisePort may be different than ListenPort when
+	// running behind a proxy, etc.
+	ListenPort int
 	// The maximum number of messages we will provide per topic.
 	// Defaults to 10 if not set.
 	MaxMessagesPerTopic int
@@ -95,7 +98,7 @@ func NewHandler(config Config) (*Handler, error) {
 
 // Validates configuration.
 func (c *Config) validate() error {
-	if c.Host == "" || c.Port == 0 {
+	if c.AdvertiseHost == "" || c.AdvertisePort == 0 || c.ListenPort == 0 {
 		return errors.New("invalid config")
 	}
 
@@ -116,11 +119,7 @@ func (h *Handler) logDisallowed(reqCtx *Context) {
 	var shouldLog bool
 
 	switch reqCtx.req.(type) {
-	case *protocol.OffsetFetchRequest:
-		shouldLog = true
 	case *protocol.OffsetCommitRequest:
-		shouldLog = true
-	case *protocol.FindCoordinatorRequest:
 		shouldLog = true
 	case *protocol.JoinGroupRequest:
 		shouldLog = true
@@ -192,15 +191,6 @@ func (h *Handler) Shutdown() error {
 
 // API Versions request sent by server to see what API's are available.
 func (h *Handler) handleAPIVersions(ctx *Context, req *protocol.APIVersionsRequest) *protocol.APIVersionsResponse {
-
-	// Get it to force version 0 for API requests
-	if req.APIVersion != 0 {
-		return &protocol.APIVersionsResponse{
-			APIVersion: req.APIVersion,
-			ErrorCode:  35,
-		}
-	}
-
 	vs := protocol.APIVersions
 	if h.config.LimitedAPI {
 		vs = protocol.APIVersionsLimited
@@ -254,8 +244,8 @@ func (h *Handler) handleMetadata(ctx *Context, req *protocol.MetadataRequest) *p
 		Brokers: []*protocol.Broker{
 			{
 				NodeID: 1,
-				Host:   h.config.Host,
-				Port:   h.config.Port,
+				Host:   h.config.AdvertiseHost,
+				Port:   int32(h.config.AdvertisePort),
 			},
 		},
 		ControllerID:  1,
@@ -287,7 +277,9 @@ func (h *Handler) handleOffsets(ctx *Context, req *protocol.OffsetsRequest) *pro
 				// Note: The returned offset is the "log end offset" (the offset of the next message
 				// that would be appended) and offsets are zero-indexed.
 				offset = h.config.RecordsAvailable()
+				ts = time.Now()
 			} else {
+				// TODO: Handle cases of a specific timestamp being provided.
 				offset = math.MaxInt64 // Unlimited data
 			}
 		}
@@ -391,8 +383,8 @@ func (h *Handler) handleFindCoordinator(ctx *Context, req *protocol.FindCoordina
 		ErrorMessage: nil,
 		Coordinator: protocol.Coordinator{
 			NodeID: 1,
-			Host:   h.config.Host,
-			Port:   h.config.Port,
+			Host:   h.config.AdvertiseHost,
+			Port:   int32(h.config.AdvertisePort),
 		},
 	}
 }
