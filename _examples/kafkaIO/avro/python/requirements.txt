@@ -14,7 +14,7 @@ idna==3.3
 numpy==1.22.4
 orjson==3.7.11
 proto-plus==1.20.6
-protobuf==3.20.1
+protobuf==3.20.2
 pyarrow==7.0.0
 pydot==1.4.2
 pymongo==3.12.3
