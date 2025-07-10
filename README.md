@@ -1,3 +1,6 @@
+# Archived
+This is an early prototype of Estuary's Dekaf. Modern Dekaf [lives here](https://github.com/estuary/flow/tree/master/crates/dekaf/src).
+
 # DEKAF
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/estuary/dekaf)](https://pkg.go.dev/github.com/estuary/dekaf)
